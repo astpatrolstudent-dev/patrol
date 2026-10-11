@@ -1,0 +1,1284 @@
+/**
+ * platform clover パトロール シフト管理
+ * Google スプレッドシートにバインドした Apps Script として使う
+ *
+ * シート構成（メニュー「パトロール > ① 初期設定」で自動作成）
+ *   メンバー  : 名前 | 有効(TRUE/FALSE) | SlackメンバーID | 登録日時 | 導入前の累計回数
+ *               | 氏名（報告書） | フリガナ | 日中連絡先 | 業務内容
+ *   月設定    : 対象月(yyyy-MM) | 締切日 | シフト状態(未作成/下書き/確定) | 更新日時
+ *   投票      : 対象月 | 名前 | 更新日時 | 1 | 2 | … | 31   （〇 △ ×）
+ *   yyyy-MM_パトロール : 日付 | 曜日 | 担当（予定） | 実施者 | 報告日時   （月ごとに1枚・1日1行）
+ *   設定      : 項目 | 値 | 説明
+ *   業務報告  : ID | 対象月 | 名前 | 日付 | 作業時間(h) | 作業詳細 | 登録日時   （パトロール以外の業務）
+ *   業務報告_交通費 : 対象月 | 名前 | 往復運賃(円) | 日数 | 更新日時
+ *   業務報告書テンプレート : 業務報告書の書式（xlsx を取り込んだもの。出力時にこれを複製して記入する）
+ *   実績_yyyy-MM : 活動実績（出力時に自動作成）
+ */
+
+const SH = {
+  MEMBERS: 'メンバー',
+  MONTHS: '月設定',
+  VOTES: '投票',
+  SETTINGS: '設定',
+  WORK: '業務報告',
+  FARE: '業務報告_交通費',
+};
+const APP_VERSION = '1.7';
+const WORK_TEMPLATE = '業務報告書テンプレート';
+const WORK_ROWS = 22;          // テンプレートの明細行数（14〜35行目）
+const WORK_FIRST_ROW = 14;
+const WORK_PRINT_RANGE = 'B1:AD46';
+const WORK_HEADER = ['ID', '対象月', '名前', '日付', '作業時間(h)', '作業詳細', '登録日時'];
+const FARE_HEADER = ['対象月', '名前', '往復運賃(円)', '日数', '更新日時'];
+const PROFILE_HEADER = ['氏名（報告書）', 'フリガナ', '日中連絡先', '業務内容'];
+
+/*
+ * ▼ スプシとアプリを別アカウントに分けるときだけ設定（同じスプシに入れて使うなら空のまま）
+ *   SPREADSHEET_ID : データを置くスプシの ID（URL の /d/ と /edit の間の文字列）
+ *   PDF_FOLDER_ID  : 活動実績PDFを保存するフォルダの ID（URL の /folders/ の後ろ）。空ならマイドライブに自動作成
+ */
+const SPREADSHEET_ID = '1WMhp1ptPfDuiCkg7nSzGRGI-hBLNrbzhwA8Awx9kVug';
+const PDF_FOLDER_ID = '1i3ZEu6zPNJPULVLLi0nckY6T4cKqPhOt';
+const TZ = 'Asia/Tokyo';
+const WORK_HOURS = 0.25;
+const MARKS = ['〇', '△', '×'];
+const STATUS = { NONE: '未作成', DRAFT: '下書き', FIXED: '確定' };
+const PDF_FOLDER = 'パトロール活動実績';
+const PATROL_SUFFIX = '_パトロール';
+const PATROL_RE = /^(\d{4}-\d{2})_パトロール$/;
+const PATROL_HEADER = ['日付', '曜日', '担当（予定）', '実施者', '報告日時'];
+
+/* =========================================================
+ * Web アプリ入口
+ * ========================================================= */
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('パトロールシフト')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/*
+ * 外部サイト（GitHub Pages など）に置いた画面からの呼び出し口。
+ * 画面は {fn: '関数名', args: [...]} を POST し、{ok, result | error} の JSON を受け取る。
+ * ここに載っている関数だけが外から呼べる。
+ */
+const API_ = {
+  getBootstrap, getMonthData, addMember, setMemberActive, saveVote, setDeadline,
+  generateShift, saveShift, setShiftStatus, reportDone, cancelReport, setManager,
+  exportReport, testNotify,
+  saveProfile, addWork, deleteWork, saveFare, exportWorkReport,
+};
+
+function doPost(e) {
+  let body = {};
+  try { body = JSON.parse((e && e.postData && e.postData.contents) || '{}'); } catch (err) { body = {}; }
+
+  // 画面からの呼び出し
+  if (body.fn) {
+    let out;
+    try {
+      const f = API_[body.fn];
+      if (!f) throw new Error('不明な操作です：' + body.fn);
+      out = { ok: true, result: f.apply(null, Array.isArray(body.args) ? body.args : []) };
+    } catch (err) {
+      out = { ok: false, error: (err && err.message) || String(err) };
+    }
+    return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // LINE の Webhook（送信先グループIDを自動で記録するだけ）
+  try {
+    (body.events || []).forEach(ev => {
+      const src = ev.source || {};
+      const id = src.groupId || src.roomId;
+      if (id && !getSettings_().LINE_TO) setSetting_('LINE_TO', id);
+    });
+  } catch (err) {
+    console.error(err);
+  }
+  return ContentService.createTextOutput('OK');
+}
+
+function onOpen() {
+  if (SPREADSHEET_ID) return; // アプリを別アカウントに分けている場合、メニューは出さない（エディタから実行する）
+  SpreadsheetApp.getUi()
+    .createMenu('パトロール')
+    .addItem('① 初期設定（シート作成）', 'setup')
+    .addItem('② 22時リマインドを有効にする', 'installTriggers')
+    .addItem('リマインドを止める', 'removeTriggers')
+    .addSeparator()
+    .addItem('通知テスト', 'testNotifyFromMenu')
+    .addItem('今すぐリマインドを実行（動作確認）', 'dailyReminder')
+    .addToUi();
+}
+
+/* =========================================================
+ * 初期設定・トリガー
+ * ========================================================= */
+
+function setup() {
+  const ss = ss_();
+  const defs = [
+    [SH.MEMBERS, ['名前', '有効', 'SlackメンバーID', '登録日時', '導入前の累計回数'].concat(PROFILE_HEADER)],
+    [SH.MONTHS, ['対象月', '締切日', 'シフト状態', '更新日時']],
+    [SH.VOTES, ['対象月', '名前', '更新日時'].concat(range_(31).map(i => String(i + 1)))],
+    [SH.SETTINGS, ['項目', '値', '説明']],
+    [SH.WORK, WORK_HEADER],
+    [SH.FARE, FARE_HEADER],
+  ];
+  defs.forEach(([name, header]) => {
+    let s = ss.getSheetByName(name);
+    if (!s) s = ss.insertSheet(name);
+    if (s.getMaxColumns() < header.length) {
+      s.insertColumnsAfter(s.getMaxColumns(), header.length - s.getMaxColumns());
+    }
+    // 日付などが勝手に変換されないよう、すべて「書式なしテキスト」にする
+    s.getRange(1, 1, s.getMaxRows(), header.length).setNumberFormat('@');
+    // 見出しは毎回書き直す（列を追加したバージョンアップにも対応）
+    s.getRange(1, 1, 1, header.length).setValues([header])
+      .setFontWeight('bold').setBackground('#e8eef5');
+    s.setFrozenRows(1);
+  });
+
+  const defaults = [
+    ['SLACK_WEBHOOK_URL', '', 'Slack の Incoming Webhook URL（空なら Slack には送らない）'],
+    ['LINE_CHANNEL_ACCESS_TOKEN', '', 'LINE公式アカウント（Messaging API）のチャネルアクセストークン（空なら LINE には送らない）'],
+    ['LINE_TO', '', 'LINE の送信先グループID（Bot をグループに招待して誰かが発言すると自動で入る）'],
+    ['REMIND_ENABLED', 'TRUE', 'FALSE にするとリマインドを一時停止'],
+    ['VOTE_REMIND_START_DAY', '20', '締切なしの月：前月のこの日から、未回答者に毎晩リマインド'],
+    ['VOTE_REMIND_DAYS_BEFORE', '3', '締切ありの月：締切の何日前から毎晩リマインドするか'],
+    ['APP_URL', '', 'この Web アプリの URL（通知の末尾に載せる）'],
+    ['MANAGER_NAME', '', '管理者（名目）の名前。活動実績の「手当」欄に載る（Webの「メンバー」タブからも変更可）'],
+    ['MANAGER_ALLOWANCE_H', '3', '管理者手当（時間）'],
+  ];
+  dirty_();
+  const have = new Set(readRows_(SH.SETTINGS).map(r => r[0]));
+  defaults.forEach(d => { if (!have.has(d[0])) appendRow_(sh_(SH.SETTINGS), d); });
+
+  ['シート1', 'Sheet1'].forEach(n => {
+    const s = ss.getSheetByName(n);
+    if (s && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s);
+  });
+  migrateLegacy_();
+  toast_('初期設定が完了しました');
+}
+
+/** 旧バージョンの「シフト」「完了報告」シートがあれば、月ごとのシートへ移す */
+function migrateLegacy_() {
+  const ss = ss_();
+  const old = { shift: ss.getSheetByName('シフト'), report: ss.getSheetByName('完了報告') };
+  if (!old.shift && !old.report) return;
+  const byMonth = {};
+  const take = (sheet, fn) => {
+    if (!sheet || sheet.getLastRow() < 2) return;
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getDisplayValues().forEach(r => {
+      if (!isDate_(r[0])) return;
+      const ym = monthOf_(r[0]);
+      byMonth[ym] = byMonth[ym] || { shifts: {}, reports: {} };
+      fn(byMonth[ym], r);
+    });
+  };
+  take(old.shift, (m, r) => { m.shifts[r[0]] = r[1]; });
+  take(old.report, (m, r) => { if (r[1]) m.reports[r[0]] = [r[1], r[2]]; });
+  Object.keys(byMonth).sort().forEach(ym => {
+    const s = ensureMonthSheet_(ym);
+    const dates = datesOf_(ym);
+    const m = byMonth[ym];
+    // すでに月のシートに入っている値は残し、空欄だけ旧データで埋める
+    const cur = s.getRange(2, 3, dates.length, 3).getDisplayValues();
+    s.getRange(2, 3, dates.length, 3).setNumberFormat('@').setValues(dates.map((d, i) => {
+      const r = m.reports[d] || ['', ''];
+      const c = cur[i] || ['', '', ''];
+      return [c[0] || m.shifts[d] || '', c[1] || r[0], c[1] ? c[2] : r[1]];
+    }));
+    // 旧データでシフトがあった月は「下書き」扱いにして画面に出す
+    if (Object.keys(m.shifts).some(d => m.shifts[d]) && monthSetting_(ym).status === STATUS.NONE) {
+      updateMonthSetting_(ym, { status: STATUS.DRAFT });
+    }
+  });
+  if (old.shift) old.shift.setName('シフト（旧・移行済み）');
+  if (old.report) old.report.setName('完了報告（旧・移行済み）');
+  dirty_();
+}
+
+function installTriggers() {
+  removeTriggers();
+  ScriptApp.newTrigger('dailyReminder')
+    .timeBased().atHour(22).nearMinute(0).everyDays(1).inTimezone(TZ)
+    .create();
+  toast_('毎日22時台のリマインドを設定しました');
+}
+
+function removeTriggers() {
+  ScriptApp.getProjectTriggers()
+    .filter(t => t.getHandlerFunction() === 'dailyReminder')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+}
+
+/* =========================================================
+ * 画面から呼ぶ API（google.script.run）
+ * ========================================================= */
+
+function getAppData() {
+  const t = today_();
+  const st = getSettings_();
+  return {
+    today: t,
+    thisMonth: monthOf_(t),
+    nextMonth: addMonths_(monthOf_(t), 1),
+    members: members_(true),
+    notify: {
+      slack: !!st.SLACK_WEBHOOK_URL,
+      line: !!(st.LINE_CHANNEL_ACCESS_TOKEN && st.LINE_TO),
+    },
+    workHours: WORK_HOURS,
+    manager: st.MANAGER_NAME || '',
+    allowance: Number(st.MANAGER_ALLOWANCE_H || 3),
+    version: APP_VERSION,
+  };
+}
+
+/** 起動時に1回だけ呼ぶ：前月・今月・来月をまとめて返す */
+function getBootstrap() {
+  const app = getAppData();
+  app.months = {};
+  [-1, 0, 1].forEach(k => {
+    const ym = addMonths_(app.thisMonth, k);
+    app.months[ym] = monthData_(ym);
+  });
+  return app;
+}
+
+function getMonthData(ym) {
+  assertYm_(ym);
+  return monthData_(ym);
+}
+
+/* ---------- メンバー ---------- */
+
+function addMember(name) {
+  name = String(name || '').trim();
+  if (!name) throw new Error('名前を入力してください');
+  return withLock_(() => {
+    const s = sh_(SH.MEMBERS);
+    const rows = readRows_(SH.MEMBERS);
+    const i = rows.findIndex(r => r[0].trim() === name);
+    if (i >= 0) writeCell_(s, i + 2, 2, 'TRUE');
+    else appendRow_(s, [name, 'TRUE', '', now_()]);
+    return getAppData();
+  });
+}
+
+function setMemberActive(name, active) {
+  return withLock_(() => {
+    const s = sh_(SH.MEMBERS);
+    const i = readRows_(SH.MEMBERS).findIndex(r => r[0].trim() === name);
+    if (i < 0) throw new Error('メンバーが見つかりません');
+    writeCell_(s, i + 2, 2, active ? 'TRUE' : 'FALSE');
+    return getAppData();
+  });
+}
+
+/* ---------- 投票 ---------- */
+
+function saveVote(ym, name, answers) {
+  assertYm_(ym);
+  if (!members_().some(m => m.name === name)) throw new Error('名前を選んでください');
+  const n = daysInMonth_(ym);
+  if (!Array.isArray(answers) || answers.length !== n) throw new Error('回答の日数が合いません');
+  const clean = answers.map(v => (MARKS.indexOf(v) >= 0 ? v : ''));
+
+  return withLock_(() => {
+    if (monthSetting_(ym).status === STATUS.FIXED) {
+      throw new Error('この月のシフトは確定済みのため、投票は変更できません');
+    }
+    const s = sh_(SH.VOTES);
+    const i = readRows_(SH.VOTES).findIndex(r => r[0] === ym && r[1] === name);
+    const vals = [ym, name, now_()].concat(range_(31).map(k => clean[k] || ''));
+    if (i >= 0) writeRow_(s, i + 2, vals);
+    else appendRow_(s, vals);
+
+    // 全員の回答がそろったら、自動でシフト下書きを作る
+    let autoGenerated = false;
+    const md = monthData_(ym);
+    if (md.members.length && md.unanswered.length === 0 && md.setting.status === STATUS.NONE) {
+      generate_(ym);
+      autoGenerated = true;
+    }
+    const out = monthData_(ym);
+    out.autoGenerated = autoGenerated;
+    return out;
+  });
+}
+
+function setDeadline(ym, deadline) {
+  assertYm_(ym);
+  deadline = String(deadline || '');
+  if (deadline && !isDate_(deadline)) throw new Error('締切日の形式が不正です');
+  return withLock_(() => {
+    updateMonthSetting_(ym, { deadline });
+    return monthData_(ym);
+  });
+}
+
+/* ---------- シフト ---------- */
+
+function generateShift(ym) {
+  assertYm_(ym);
+  return withLock_(() => {
+    generate_(ym);
+    return monthData_(ym);
+  });
+}
+
+/** 手動調整した結果を保存（確定前のみ） */
+function saveShift(ym, map) {
+  assertYm_(ym);
+  return withLock_(() => {
+    const cur = monthSetting_(ym);
+    if (cur.status === STATUS.FIXED) throw new Error('確定済みです。編集するには先に「確定を解除」してください');
+    const valid = new Set(members_(true).map(m => m.name));
+    const clean = {};
+    datesOf_(ym).forEach(d => {
+      const v = String((map || {})[d] || '');
+      if (v && !valid.has(v)) throw new Error('不明なメンバー：' + v);
+      clean[d] = v;
+    });
+    writeShifts_(ym, clean);
+    if (cur.status === STATUS.NONE) updateMonthSetting_(ym, { status: STATUS.DRAFT });
+    return monthData_(ym);
+  });
+}
+
+function setShiftStatus(ym, status) {
+  assertYm_(ym);
+  if (status !== STATUS.DRAFT && status !== STATUS.FIXED) throw new Error('状態の指定が不正です');
+  return withLock_(() => {
+    const cur = shifts_(ym);
+    if (status === STATUS.FIXED && !Object.keys(cur).some(d => cur[d])) {
+      throw new Error('シフトがまだありません');
+    }
+    updateMonthSetting_(ym, { status });
+    const md = monthData_(ym);
+    if (status === STATUS.FIXED) {
+      const counts = countBy_(md.dates.map(d => md.shifts[d]).filter(Boolean));
+      const summary = Object.keys(counts).map(k => `${k} ${counts[k]}回`).join(' / ');
+      safeNotify_(() => `【${ymLabel_(ym)}のシフトが確定しました】\n${summary}${appUrl_()}`);
+    }
+    return md;
+  });
+}
+
+/* ---------- 完了報告 ---------- */
+
+function reportDone(date, name) {
+  if (!isDate_(date)) throw new Error('日付が不正です');
+  if (date > today_()) throw new Error('未来の日付は報告できません');
+  if (!members_(true).some(m => m.name === name)) throw new Error('実施者を選んでください');
+  return withLock_(() => {
+    writePatrol_(date, 4, [name, now_()]);
+    return monthData_(monthOf_(date));
+  });
+}
+
+function cancelReport(date) {
+  if (!isDate_(date)) throw new Error('日付が不正です');
+  return withLock_(() => {
+    writePatrol_(date, 4, ['', '']);
+    return monthData_(monthOf_(date));
+  });
+}
+
+/* ---------- 管理者（名目） ---------- */
+
+function setManager(name) {
+  name = String(name || '');
+  if (name && !members_(true).some(m => m.name === name)) throw new Error('メンバーが見つかりません');
+  return withLock_(() => {
+    setSetting_('MANAGER_NAME', name);
+    return getAppData();
+  });
+}
+
+/* ---------- 活動実績（スプシ＋PDF） ---------- */
+
+function reportSummary_(ym) {
+  const dates = datesOf_(ym);
+  const reps = reports_(ym);
+  const st = getSettings_();
+  const all = members_(true);
+  const lastDate = dates[dates.length - 1];
+
+  // 月内の回数
+  const month = {};
+  dates.forEach(d => { if (reps[d]) month[reps[d].name] = (month[reps[d].name] || 0) + 1; });
+
+  // トータル = 導入前の累計 + この月の末日までの完了報告
+  const totals = totals_(lastDate);
+
+  // 表に載せる人：参加中のメンバー＋その月に実績がある人（メンバー一覧の順）
+  const names = all.filter(m => m.active || month[m.name]).map(m => m.name);
+  Object.keys(month).forEach(n => { if (names.indexOf(n) < 0) names.push(n); });
+
+  const manager = st.MANAGER_NAME || '';
+  const allowance = Number(st.MANAGER_ALLOWANCE_H || 3);
+  return {
+    ym,
+    workHours: WORK_HOURS,
+    manager,
+    allowance,
+    days: dates.map(d => ({ date: d, name: reps[d] ? reps[d].name : '' })),
+    members: names.map(n => ({
+      name: n,
+      count: month[n] || 0,
+      hours: (month[n] || 0) * WORK_HOURS,
+      allowance: n === manager ? allowance : '',
+      total: totals[n] || 0,
+    })),
+    missing: dates.filter(d => !reps[d] && d <= today_()),
+  };
+}
+
+/**
+ * 書式（いただいた例に準拠）
+ *  左  : 月日 | 曜日 | 担当 | 作業時間（h）   … パトロールがない日は担当・作業時間を空欄＋黄色
+ *  右上: ○月担当回数 | 回数 | 作業時間 | 手当（管理者のみ）
+ *  右下: トータル担当回数 | 回数 | 数値
+ */
+function exportReport(ym) {
+  assertYm_(ym);
+  return withLock_(() => {
+    const ss = ss_();
+    const sum = reportSummary_(ym);
+    const mNum = Number(ym.slice(5));
+
+    const name = '実績_' + ym;
+    let s = ss.getSheetByName(name);
+    if (s) s.clear();
+    else s = ss.insertSheet(name, ss.getSheets().length);
+    s.setHiddenGridlines(true);
+
+    // 左：日別
+    const n = sum.days.length;
+    s.getRange('C1:D1').setValues([['担当', '作業時間（h）']]);
+    s.getRange(2, 1, n, 2).setNumberFormat('@');
+    s.getRange(2, 1, n, 4).setValues(sum.days.map(d => [
+      `${mNum}/${Number(d.date.slice(8))}`, wd_(d.date), d.name, d.name ? sum.workHours : '',
+    ]));
+    s.getRange(2, 1, n, 4).setBorder(true, true, true, true, true, true).setFontSize(12);
+    s.getRange(2, 2, n, 1).setHorizontalAlignment('center');
+    s.getRange(2, 3, n, 1).setFontWeight('bold');
+    s.getRange(2, 4, n, 1).setNumberFormat('0.00');
+    s.getRange(2, 3, n, 2).setBackgrounds(sum.days.map(d => (d.name ? [null, null] : ['#ffff00', '#ffff00'])));
+
+    // 右上：その月の担当回数
+    const k = sum.members.length;
+    s.getRange('F2').setValue(`${mNum}月担当回数`);
+    s.getRange('H2:I2').setValues([['作業時間', '手当']]);
+    if (k) {
+      s.getRange(3, 6, k, 4).setValues(sum.members.map(m => [m.name, m.count, m.hours, m.allowance]));
+      s.getRange(3, 6, k, 4).setBorder(true, true, true, true, true, true).setFontSize(12);
+      s.getRange(3, 6, k, 1).setBackground('#e2efda').setFontWeight('bold').setHorizontalAlignment('center');
+      s.getRange(3, 7, k, 1).setNumberFormat('0"回"').setHorizontalAlignment('center');
+
+      // 右下：トータル担当回数
+      const t = 3 + k;
+      s.getRange(t, 6).setValue('トータル担当回数');
+      s.getRange(t + 1, 6, k, 3).setValues(sum.members.map(m => [m.name, m.total, m.total]));
+      s.getRange(t + 1, 6, k, 3).setBorder(true, true, true, true, true, true).setFontSize(12);
+      s.getRange(t + 1, 6, k, 1).setBackground('#e2efda').setFontWeight('bold').setHorizontalAlignment('center');
+      s.getRange(t + 1, 7, k, 1).setNumberFormat('0"回"').setHorizontalAlignment('center');
+    }
+    [90, 45, 90, 105, 24, 90, 75, 75, 55].forEach((w, i) => s.setColumnWidth(i + 1, w));
+    SpreadsheetApp.flush();
+
+    const fileName = `活動実績_${ym}.pdf`;
+    const blob = pdfOf_(ss, s, fileName);
+    const folder = folder_();
+    const old = folder.getFilesByName(fileName);
+    while (old.hasNext()) old.next().setTrashed(true);
+    const file = folder.createFile(blob);
+
+    return {
+      fileName,
+      pdfBase64: Utilities.base64Encode(blob.getBytes()),
+      pdfUrl: file.getUrl(),
+      sheetUrl: `${ss.getUrl()}#gid=${s.getSheetId()}`,
+      count: sum.days.filter(d => d.name).length,
+      missing: sum.missing,
+    };
+  });
+}
+
+/* ---------- 業務報告書（パトロール以外の業務） ---------- */
+
+function saveProfile(name, p) {
+  p = p || {};
+  return withLock_(() => {
+    const s = sh_(SH.MEMBERS);
+    const i = readRows_(SH.MEMBERS).findIndex(r => r[0].trim() === name);
+    if (i < 0) throw new Error('メンバーが見つかりません');
+    dirty_();
+    s.getRange(1, 6, 1, 4).setValues([PROFILE_HEADER]).setFontWeight('bold').setBackground('#e8eef5');
+    s.getRange(i + 2, 6, 1, 4).setNumberFormat('@').setValues([[
+      String(p.fullName || '').trim(), String(p.kana || '').trim(),
+      String(p.tel || '').trim(), String(p.duty || '').trim(),
+    ]]);
+    return getAppData();
+  });
+}
+
+function addWork(name, date, hours, detail) {
+  if (!isDate_(date)) throw new Error('日付を選んでください');
+  if (!members_(true).some(m => m.name === name)) throw new Error('報告者を選んでください');
+  hours = Number(hours);
+  if (!(hours > 0 && hours <= 24)) throw new Error('作業時間は 0〜24 の数字で入力してください');
+  detail = String(detail || '').trim();
+  if (!detail) throw new Error('作業詳細を入力してください');
+  const ym = monthOf_(date);
+  return withLock_(() => {
+    if ((work_(ym)[name] || []).length >= WORK_ROWS) {
+      throw new Error(`業務報告書1枚に書けるのは${WORK_ROWS}行までです`);
+    }
+    const s = ensureSheet_(SH.WORK, WORK_HEADER);
+    appendRow_(s, [Utilities.getUuid().slice(0, 8), ym, name, date, String(hours), detail, now_()]);
+    return monthData_(ym);
+  });
+}
+
+function deleteWork(id) {
+  return withLock_(() => {
+    const rows = readRowsOpt_(SH.WORK);
+    const i = rows.findIndex(r => r[0] === id);
+    if (i < 0) throw new Error('その記録は見つかりません（すでに削除されています）');
+    const ym = rows[i][1];
+    sh_(SH.WORK).deleteRow(i + 2);
+    dirty_();
+    return monthData_(ym);
+  });
+}
+
+function saveFare(ym, name, fare, days) {
+  assertYm_(ym);
+  fare = fare === '' || fare == null ? '' : Number(fare);
+  days = days === '' || days == null ? '' : Number(days);
+  if (fare !== '' && !(fare >= 0)) throw new Error('往復運賃は数字で入力してください');
+  if (days !== '' && !(days >= 0 && days <= 31)) throw new Error('日数は 0〜31 の数字で入力してください');
+  return withLock_(() => {
+    const s = ensureSheet_(SH.FARE, FARE_HEADER);
+    const i = readRowsOpt_(SH.FARE).findIndex(r => r[0] === ym && r[1] === name);
+    const vals = [ym, name, String(fare), String(days), now_()];
+    if (i >= 0) writeRow_(s, i + 2, vals);
+    else appendRow_(s, vals);
+    return monthData_(ym);
+  });
+}
+
+/** テンプレートを複製して記入し、Excel と PDF を作る */
+function exportWorkReport(ym, name) {
+  assertYm_(ym);
+  return withLock_(() => {
+    const ss = ss_();
+    const tpl = ss.getSheetByName(WORK_TEMPLATE);
+    if (!tpl) {
+      throw new Error(`スプレッドシートに「${WORK_TEMPLATE}」シートがありません。` +
+        'セットアップ手順の「業務報告書テンプレートの取り込み」を行ってください。');
+    }
+    const m = members_(true).find(x => x.name === name);
+    if (!m) throw new Error('報告者を選んでください');
+    const items = work_(ym)[name] || [];
+    if (!items.length) throw new Error(`${ymLabel_(ym)}の作業記録がまだありません`);
+    if (items.length > WORK_ROWS) throw new Error(`1枚に書けるのは${WORK_ROWS}行までです`);
+    const fare = fares_(ym)[name] || {};
+    const title = `業務報告書_${ym}_${m.fullName || name}`;
+
+    const tmp = SpreadsheetApp.create(title);
+    try {
+      const sh = tpl.copyTo(tmp).setName(`${Number(ym.slice(5))}月`);
+      tmp.getSheets().forEach(x => { if (x.getSheetId() !== sh.getSheetId()) tmp.deleteSheet(x); });
+      fillWorkSheet_(sh, ym, m, items, fare);
+      SpreadsheetApp.flush();
+
+      const base = `https://docs.google.com/spreadsheets/d/${tmp.getId()}/export`;
+      const xlsx = fetchExport_(`${base}?format=xlsx`).setName(title + '.xlsx');
+      const pdf = fetchExport_(`${base}?format=pdf&gid=${sh.getSheetId()}` +
+        `&range=${encodeURIComponent(WORK_PRINT_RANGE)}&size=A4&portrait=true&fitw=true` +
+        '&gridlines=false&printtitle=false&sheetnames=false&pagenum=UNDEFINED&horizontal_alignment=CENTER' +
+        '&top_margin=0.5&bottom_margin=0.5&left_margin=0.5&right_margin=0.5').setName(title + '.pdf');
+
+      const folder = subFolder_('業務報告書');
+      const save = blob => {
+        const old = folder.getFilesByName(blob.getName());
+        while (old.hasNext()) old.next().setTrashed(true);
+        return folder.createFile(blob);
+      };
+      const fx = save(xlsx);
+      const fp = save(pdf);
+      return {
+        title,
+        xlsx: { name: xlsx.getName(), base64: Utilities.base64Encode(xlsx.getBytes()), url: fx.getUrl() },
+        pdf: { name: pdf.getName(), base64: Utilities.base64Encode(pdf.getBytes()), url: fp.getUrl() },
+        folderUrl: folder.getUrl(),
+      };
+    } finally {
+      try { DriveApp.getFileById(tmp.getId()).setTrashed(true); } catch (e) { console.warn(e); }
+    }
+  });
+}
+
+/** テンプレートのセル位置に合わせて記入する */
+function fillWorkSheet_(sh, ym, m, items, fare) {
+  if (m.duty) sh.getRange('I4').setValue(m.duty);           // 業務内容（空ならテンプレートの文言のまま）
+  sh.getRange('E8').setValue(m.kana || '');                // フリガナ
+  sh.getRange('E9').setValue(m.fullName || m.name);         // 氏名
+  sh.getRange('V8').setValue(m.tel || '');                 // 日中連絡先TEL
+  sh.getRange('E11:H11').setValues([ym.slice(0, 4).split('').map(Number)]);  // 年（1桁ずつ）
+  sh.getRange('J11:K11').setValues([ym.slice(5, 7).split('').map(Number)]);  // 月（1桁ずつ）
+
+  const r0 = WORK_FIRST_ROW;
+  sh.getRange(r0, 2, WORK_ROWS, 3).clearContent();          // B:D（日・曜・作業時間）
+  sh.getRange(r0, 8, WORK_ROWS, 1).clearContent();          // H（作業詳細）
+  if (items.length) {
+    sh.getRange(r0, 3, items.length, 1).setNumberFormat('@');
+    sh.getRange(r0, 2, items.length, 3).setValues(items.map(it => [Number(it.date.slice(8)), wd_(it.date), it.hours]));
+    sh.getRange(r0, 8, items.length, 1).setValues(items.map(it => [it.detail]));
+  }
+
+  // 実費交通費：往復(L45 円) ＊ Q45 日 ＝ W45
+  if (fare.fare !== '' && fare.fare != null) {
+    const days = fare.days !== '' && fare.days != null ? fare.days : new Set(items.map(it => it.date)).size;
+    sh.getRange('L45').setValue(fare.fare);
+    sh.getRange('Q45').setValue(days);
+    sh.getRange('W45').setValue(fare.fare * days).setNumberFormat('#,##0');
+  } else {
+    sh.getRangeList(['L45', 'Q45', 'W45']).clearContent();
+  }
+}
+
+function work_(ym) {
+  const o = {};
+  readRowsOpt_(SH.WORK).forEach(r => {
+    if (r[1] !== ym || !r[2] || !isDate_(r[3])) return;
+    (o[r[2]] = o[r[2]] || []).push({ id: r[0], date: r[3], hours: Number(r[4]) || 0, detail: r[5], at: r[6] });
+  });
+  Object.keys(o).forEach(k => o[k].sort((a, b) =>
+    (a.date < b.date ? -1 : a.date > b.date ? 1 : a.at < b.at ? -1 : a.at > b.at ? 1 : 0)));
+  return o;
+}
+
+function fares_(ym) {
+  const o = {};
+  readRowsOpt_(SH.FARE).forEach(r => {
+    if (r[0] !== ym || !r[1]) return;
+    o[r[1]] = { fare: r[2] === '' ? '' : Number(r[2]), days: r[3] === '' ? '' : Number(r[3]) };
+  });
+  return o;
+}
+
+function fetchExport_(url) {
+  const res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) throw new Error('ファイルの作成に失敗しました（' + res.getResponseCode() + '）。少し待ってもう一度お試しください');
+  return res.getBlob();
+}
+
+function subFolder_(name) {
+  const parent = folder_();
+  const it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+
+/* ---------- 通知テスト ---------- */
+
+function testNotify() {
+  const r = notify_(() => '【テスト】パトロールシフトからの通知テストです');
+  if (!r.sent.length && !r.errors.length) throw new Error('通知先が設定されていません（「設定」シートを確認してください）');
+  if (r.errors.length) throw new Error(r.errors.join('\n'));
+  return r.sent.join(' / ') + ' に送信しました';
+}
+
+function testNotifyFromMenu() {
+  try { toast_(testNotify()); } catch (e) { toast_(e.message); }
+}
+
+/* =========================================================
+ * 22時リマインド（時間主導トリガーから実行）
+ * ========================================================= */
+
+function dailyReminder() {
+  const st = getSettings_();
+  if (String(st.REMIND_ENABLED || 'TRUE').toUpperCase() === 'FALSE') return;
+  const t = today_();
+  const ym = monthOf_(t);
+
+  // ① 今日のパトロール完了報告
+  if (!reports_(ym)[t]) {
+    const who = shifts_(ym)[t];
+    safeNotify_(m =>
+      `【パトロール未報告】${md_(t)} の完了報告がまだです。\n` +
+      `担当：${who ? m(who) : '（未設定）'}\n` +
+      `パトロールが終わったら完了報告をお願いします。${appUrl_()}`);
+  }
+
+  // ② 次月の担当可否投票
+  const nx = addMonths_(ym, 1);
+  const md = monthData_(nx);
+  if (!md.members.length || md.setting.status !== STATUS.NONE) return;
+
+  if (md.unanswered.length === 0 || md.deadlinePassed) {
+    // 全員回答済み or 締切を過ぎた（未回答は△扱い）→ 下書きを作る
+    try { withLock_(() => generate_(nx)); } catch (e) { console.error(e); }
+    return;
+  }
+
+  let remind;
+  if (md.setting.deadline) {
+    const left = daysBetween_(t, md.setting.deadline);
+    remind = left >= 0 && left <= Number(st.VOTE_REMIND_DAYS_BEFORE || 3);
+  } else {
+    remind = Number(t.slice(8)) >= Number(st.VOTE_REMIND_START_DAY || 20);
+  }
+  if (remind) {
+    safeNotify_(m =>
+      `【${ymLabel_(nx)}の担当可否 投票】\n` +
+      `未回答：${md.unanswered.map(m).join('、')}` +
+      (md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '') +
+      `\n回答をお願いします。${appUrl_()}`);
+  }
+}
+
+/* =========================================================
+ * シフト生成
+ * ========================================================= */
+
+function generate_(ym) {
+  const md = monthData_(ym);
+  if (md.setting.status === STATUS.FIXED) {
+    throw new Error('確定済みです。作り直す場合は先に「確定を解除」してください');
+  }
+  if (!md.members.length) throw new Error('メンバーが登録されていません');
+  if (md.unanswered.length && !md.deadlinePassed) {
+    throw new Error(
+      `まだ回答していない人がいます：${md.unanswered.join('、')}\n` +
+      '全員が回答するか、締切日を過ぎると作成できます（締切後の未回答は△扱い）。');
+  }
+  const avail = availOf_(md, '△');
+  const res = buildShift_(md.dates.length, md.members, avail, md.prevLast, 150);
+  const map = {};
+  md.dates.forEach((d, i) => { map[d] = res.assign[i] || ''; });
+  writeShifts_(ym, map);
+  updateMonthSetting_(ym, { status: STATUS.DRAFT });
+
+  const blanks = res.assign.filter(x => !x).length;
+  safeNotify_(() =>
+    `【${ymLabel_(ym)}のシフト】下書きを自動作成しました。` +
+    (blanks ? `\n⚠ 担当者がいない日が${blanks}日あります。` : '') +
+    `\n確認・調整して「確定」をお願いします。${appUrl_()}`);
+}
+
+/**
+ * ルール
+ *  1. × の人は入れない
+ *  2. 同じ人を2日連続にしない（前月末日との連続も含む）
+ *  3. 〇 の人で埋められる日は 〇 を優先、△ はどうしても足りない日だけ
+ *  4. その月の中で回数を均等に
+ * ランダム性のある貪欲法 + 局所改善を何度か回して、一番良い案を採用する。
+ * 評価：空き日数 → △の使用数 → 回数の偏り（二乗和） の順に小さいほど良い
+ */
+function buildShift_(n, names, avail, prevLast, iterations) {
+  const rank = v => (v === '〇' ? 0 : v === '△' ? 1 : 9);
+  let best = null;
+
+  for (let it = 0; it < iterations; it++) {
+    const a = new Array(n).fill('');
+    const c = {};
+    names.forEach(nm => { c[nm] = 0; });
+    const canPut = (nm, i) => {
+      if (rank(avail[nm][i]) === 9) return false;
+      const left = i === 0 ? (prevLast || '') : a[i - 1];
+      const right = i === n - 1 ? '' : a[i + 1];
+      return nm !== left && nm !== right;
+    };
+
+    // 候補が少ない日から埋める
+    const order = range_(n).map(i => ({
+      i,
+      o: names.filter(nm => avail[nm][i] === '〇').length,
+      t: names.filter(nm => avail[nm][i] === '△').length,
+      r: Math.random(),
+    })).sort((x, y) => x.o - y.o || x.t - y.t || x.r - y.r).map(x => x.i);
+
+    order.forEach(i => {
+      const ok = names.filter(nm => canPut(nm, i));
+      if (!ok.length) return;
+      const bestRank = Math.min.apply(null, ok.map(nm => rank(avail[nm][i])));
+      const pool = ok.filter(nm => rank(avail[nm][i]) === bestRank);
+      const mn = Math.min.apply(null, pool.map(nm => c[nm]));
+      const top = pool.filter(nm => c[nm] === mn);
+      const pick = top[Math.floor(Math.random() * top.length)];
+      a[i] = pick;
+      c[pick]++;
+    });
+
+    // 局所改善：空きを埋める / △→〇 / 多い人→少ない人
+    let changed = true;
+    let guard = 0;
+    while (changed && guard++ < 1000) {
+      changed = false;
+      for (let i = 0; i < n; i++) {
+        const cur = a[i];
+        const rc = cur ? rank(avail[cur][i]) : 99;
+        for (let k = 0; k < names.length; k++) {
+          const nm = names[k];
+          if (nm === cur || !canPut(nm, i)) continue;
+          const rn = rank(avail[nm][i]);
+          if (rn < rc || (rn === rc && c[nm] + 1 < c[cur])) {
+            a[i] = nm;
+            c[nm]++;
+            if (cur) c[cur]--;
+            changed = true;
+            break;
+          }
+        }
+      }
+    }
+
+    const blanks = a.filter(x => !x).length;
+    const tri = a.filter((x, i) => x && avail[x][i] === '△').length;
+    const sq = names.reduce((s, nm) => s + c[nm] * c[nm], 0);
+    const score = blanks * 1e6 + tri * 1e3 + sq;
+    if (!best || score < best.score) best = { assign: a.slice(), counts: Object.assign({}, c), score };
+  }
+  return best;
+}
+
+/* =========================================================
+ * データ読み書き
+ * ========================================================= */
+
+function monthData_(ym) {
+  const dates = datesOf_(ym);
+  const members = members_().map(m => m.name);
+  const setting = monthSetting_(ym);
+  const votes = votes_(ym);
+  const shifts = setting.status === STATUS.NONE ? {} : shifts_(ym);
+  const reports = reports_(ym);
+  const unanswered = members.filter(nm => !votes[nm] || votes[nm].answers.some(v => !v));
+  const deadlinePassed = !!setting.deadline && today_() > setting.deadline;
+  const prevYm = addMonths_(ym, -1);
+  const prevDates = datesOf_(prevYm);
+  const prevLast = shifts_(prevYm)[prevDates[prevDates.length - 1]] || '';
+  const totals = totals_(dates[dates.length - 1]);
+  const md = {
+    ym, dates, members, setting, votes, shifts, reports, unanswered, deadlinePassed, prevLast, totals,
+    work: work_(ym), fares: fares_(ym), today: today_(),
+  };
+  md.warnings = shiftWarnings_(md);
+  return md;
+}
+
+function availOf_(md, fillBlank) {
+  const o = {};
+  md.members.forEach(nm => {
+    const a = (md.votes[nm] && md.votes[nm].answers) || [];
+    o[nm] = md.dates.map((_, i) => a[i] || fillBlank);
+  });
+  return o;
+}
+
+function shiftWarnings_(md) {
+  if (!md.dates.some(d => md.shifts[d] !== undefined)) return [];
+  const av = availOf_(md, '△');
+  const w = [];
+  md.dates.forEach((d, i) => {
+    const who = md.shifts[d];
+    if (!who) {
+      const anyone = md.members.some(nm => av[nm][i] !== '×');
+      w.push({ date: d, level: 'error', text: anyone ? '担当者が決まっていません' : '全員×のため担当者なし' });
+      return;
+    }
+    if (md.members.indexOf(who) < 0) w.push({ date: d, level: 'warn', text: `${who}さんはメンバー一覧で無効になっています` });
+    else if (av[who][i] === '×') w.push({ date: d, level: 'error', text: `${who}さんは×の日です` });
+    const prev = i === 0 ? md.prevLast : md.shifts[md.dates[i - 1]];
+    if (prev && prev === who) w.push({ date: d, level: 'warn', text: `${who}さんが2日連続です` });
+  });
+  return w;
+}
+
+function members_(includeInactive) {
+  return readRows_(SH.MEMBERS)
+    .filter(r => r[0].trim())
+    .map(r => ({
+      name: r[0].trim(),
+      active: String(r[1]).toUpperCase() !== 'FALSE',
+      slackId: (r[2] || '').trim(),
+      baseCount: Number(r[4]) || 0,
+      fullName: (r[5] || '').trim(),
+      kana: (r[6] || '').trim(),
+      tel: (r[7] || '').trim(),
+      duty: r[8] || '',
+    }))
+    .filter(m => includeInactive || m.active);
+}
+
+function monthSetting_(ym) {
+  const r = readRows_(SH.MONTHS).find(r => r[0] === ym);
+  return { deadline: r ? r[1] : '', status: (r && r[2]) || STATUS.NONE };
+}
+
+function updateMonthSetting_(ym, patch) {
+  const s = sh_(SH.MONTHS);
+  const i = readRows_(SH.MONTHS).findIndex(r => r[0] === ym);
+  const next = Object.assign(monthSetting_(ym), patch);
+  const vals = [ym, next.deadline || '', next.status || STATUS.NONE, now_()];
+  if (i >= 0) writeRow_(s, i + 2, vals);
+  else appendRow_(s, vals);
+}
+
+function votes_(ym) {
+  const n = daysInMonth_(ym);
+  const o = {};
+  readRows_(SH.VOTES).forEach(r => {
+    if (r[0] !== ym || !r[1]) return;
+    o[r[1]] = {
+      updatedAt: r[2],
+      answers: range_(n).map(i => (MARKS.indexOf(r[3 + i]) >= 0 ? r[3 + i] : '')),
+    };
+  });
+  return o;
+}
+
+/* ---------- 月ごとのパトロールシート（シフト＋完了報告） ---------- */
+
+function patrolName_(ym) { return ym + PATROL_SUFFIX; }
+function patrolRows_(ym) { return db_().patrol[ym] || []; }
+
+function ensureMonthSheet_(ym) {
+  const ss = ss_();
+  let s = ss.getSheetByName(patrolName_(ym));
+  if (s) return s;
+  const dates = datesOf_(ym);
+  // 月の順に並ぶよう、自分より新しい月のシートの手前に入れる
+  const sheets = ss.getSheets();
+  let pos = sheets.length;
+  for (let i = 0; i < sheets.length; i++) {
+    const m = sheets[i].getName().match(PATROL_RE);
+    if (m && m[1] > ym) { pos = i; break; }
+  }
+  s = ss.insertSheet(patrolName_(ym), pos);
+  s.getRange(1, 1, dates.length + 1, 5).setNumberFormat('@');
+  s.getRange(1, 1, 1, 5).setValues([PATROL_HEADER]).setFontWeight('bold').setBackground('#e8eef5');
+  s.setFrozenRows(1);
+  s.getRange(2, 1, dates.length, 2).setValues(dates.map(d => [d, wd_(d)]));
+  s.getRange(2, 2, dates.length, 1).setHorizontalAlignment('center');
+  [100, 45, 110, 110, 140].forEach((w, i) => s.setColumnWidth(i + 1, w));
+  dirty_();
+  return s;
+}
+
+/** その日の行の col 列目から values を書く（4=実施者, 3=担当） */
+function writePatrol_(date, col, values) {
+  const ym = monthOf_(date);
+  const s = ensureMonthSheet_(ym);
+  let i = patrolRows_(ym).findIndex(r => r[0] === date);
+  if (i < 0) i = Number(date.slice(8)) - 1; // 行が見つからなければ日付の位置に書く
+  dirty_();
+  s.getRange(i + 2, col, 1, values.length).setNumberFormat('@').setValues([values]);
+}
+
+function shifts_(ym) {
+  const o = {};
+  patrolRows_(ym).forEach(r => { if (r[0] && monthOf_(r[0]) === ym) o[r[0]] = r[2]; });
+  return o;
+}
+
+function writeShifts_(ym, map) {
+  const s = ensureMonthSheet_(ym);
+  const dates = datesOf_(ym);
+  const rows = patrolRows_(ym);
+  // 日付の並びが崩れていなければ1回でまとめて書く
+  const aligned = dates.every((d, i) => !rows[i] || rows[i][0] === d || rows[i][0] === '');
+  dirty_();
+  if (aligned) {
+    s.getRange(2, 3, dates.length, 1).setNumberFormat('@').setValues(dates.map(d => [map[d] || '']));
+  } else {
+    dates.forEach(d => writePatrol_(d, 3, [map[d] || '']));
+  }
+}
+
+function reports_(ym) {
+  const o = {};
+  patrolRows_(ym).forEach(r => {
+    if (r[0] && monthOf_(r[0]) === ym && r[3]) o[r[0]] = { name: r[3], at: r[4] };
+  });
+  return o;
+}
+
+/** トータル担当回数 = 導入前の累計 + lastDate までの完了報告 */
+function totals_(lastDate) {
+  const t = {};
+  members_(true).forEach(m => { t[m.name] = m.baseCount; });
+  const p = db_().patrol;
+  Object.keys(p).forEach(ym => p[ym].forEach(r => {
+    if (r[0] && r[3] && r[0] <= lastDate) t[r[3]] = (t[r[3]] || 0) + 1;
+  }));
+  return t;
+}
+
+function getSettings_() {
+  const o = {};
+  readRows_(SH.SETTINGS).forEach(r => { if (r[0]) o[r[0].trim()] = String(r[1] || '').trim(); });
+  return o;
+}
+
+function setSetting_(key, val) {
+  const s = sh_(SH.SETTINGS);
+  const i = readRows_(SH.SETTINGS).findIndex(r => r[0] === key);
+  if (i >= 0) writeCell_(s, i + 2, 2, val);
+  else appendRow_(s, [key, val, '']);
+}
+
+/* =========================================================
+ * 通知（Slack / LINE）
+ * ========================================================= */
+
+function appUrl_() {
+  const u = getSettings_().APP_URL;
+  return u ? '\n' + u : '';
+}
+
+function mention_(channel) {
+  const ids = {};
+  members_(true).forEach(m => { ids[m.name] = m.slackId; });
+  return nm => (channel === 'slack' && ids[nm] ? `<@${ids[nm]}>` : `${nm}さん`);
+}
+
+function notify_(build) {
+  const st = getSettings_();
+  const sent = [];
+  const errors = [];
+
+  if (st.SLACK_WEBHOOK_URL) {
+    try {
+      const res = UrlFetchApp.fetch(st.SLACK_WEBHOOK_URL, {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify({ text: build(mention_('slack')) }),
+        muteHttpExceptions: true,
+      });
+      if (res.getResponseCode() >= 300) throw new Error(res.getContentText());
+      sent.push('Slack');
+    } catch (e) {
+      errors.push('Slack送信エラー：' + e.message);
+    }
+  }
+
+  if (st.LINE_CHANNEL_ACCESS_TOKEN && st.LINE_TO) {
+    try {
+      const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { Authorization: 'Bearer ' + st.LINE_CHANNEL_ACCESS_TOKEN },
+        payload: JSON.stringify({
+          to: st.LINE_TO,
+          messages: [{ type: 'text', text: build(mention_('line')).slice(0, 4900) }],
+        }),
+        muteHttpExceptions: true,
+      });
+      if (res.getResponseCode() >= 300) throw new Error(res.getContentText());
+      sent.push('LINE');
+    } catch (e) {
+      errors.push('LINE送信エラー：' + e.message);
+    }
+  }
+  return { sent, errors };
+}
+
+function safeNotify_(build) {
+  try {
+    const r = notify_(build);
+    r.errors.forEach(e => console.error(e));
+    return r.sent;
+  } catch (e) {
+    console.error(e);
+    return [];
+  }
+}
+
+/* =========================================================
+ * PDF
+ * ========================================================= */
+
+function pdfOf_(ss, sheet, fileName) {
+  const url = `https://docs.google.com/spreadsheets/d/${ss.getId()}/export` +
+    `?format=pdf&gid=${sheet.getSheetId()}&size=A4&portrait=true&fitw=true` +
+    '&gridlines=false&printtitle=false&sheetnames=false&pagenum=CENTER' +
+    '&top_margin=0.6&bottom_margin=0.6&left_margin=0.6&right_margin=0.6';
+  const res = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() !== 200) throw new Error('PDFの作成に失敗しました（' + res.getResponseCode() + '）');
+  return res.getBlob().setName(fileName);
+}
+
+function folder_() {
+  if (PDF_FOLDER_ID) {
+    try { return DriveApp.getFolderById(PDF_FOLDER_ID); }
+    catch (e) { console.warn('PDF_FOLDER_ID のフォルダを開けないのでマイドライブに保存します: ' + e.message); }
+  }
+  const it = DriveApp.getFoldersByName(PDF_FOLDER);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(PDF_FOLDER);
+}
+
+/* =========================================================
+ * 小さな道具
+ * ========================================================= */
+
+let SS_ = null;
+function ss_() {
+  if (SS_) return SS_;
+  SS_ = SPREADSHEET_ID ? SpreadsheetApp.openById(SPREADSHEET_ID) : SpreadsheetApp.getActiveSpreadsheet();
+  if (!SS_) throw new Error('スプレッドシートが見つかりません。Code.gs の SPREADSHEET_ID を設定してください。');
+  return SS_;
+}
+
+function sh_(name) {
+  const s = ss_().getSheetByName(name);
+  if (!s) throw new Error(`シート「${name}」がありません。メニュー「パトロール > ① 初期設定」を実行してください。`);
+  return s;
+}
+
+/*
+ * 読み込みの高速化：
+ *  1回の呼び出しの中で、全シートを Sheets API でまとめて1回だけ読み、結果を使い回す。
+ *  書き込みをしたら印をつけ、次に読むときだけ読み直す。
+ */
+let DB_ = null;
+const WIDTH_ = 34;
+
+function db_() {
+  if (DB_) return DB_;
+  const ss = ss_();
+  const existing = ss.getSheets().map(x => x.getName());
+  const base = Object.keys(SH).map(k => SH[k]).filter(n => existing.indexOf(n) >= 0);
+  const months = existing.filter(n => PATROL_RE.test(n));
+  const names = base.concat(months);
+  let data = null;
+  try {
+    if (typeof Sheets !== 'undefined' && names.length) {
+      SpreadsheetApp.flush();
+      const res = Sheets.Spreadsheets.Values.batchGet(ss.getId(), {
+        ranges: names.map(n => `'${n}'!A2:AH`),
+      });
+      data = res.valueRanges.map(v => (v.values || []).map(pad_));
+    }
+  } catch (e) {
+    console.warn('batchGet に失敗したので通常の読み込みに切り替えます: ' + e.message);
+    data = null;
+  }
+  if (!data) data = names.map(readRowsDirect_);
+  DB_ = { patrol: {} };
+  names.forEach((n, i) => {
+    const m = n.match(PATROL_RE);
+    if (m) DB_.patrol[m[1]] = data[i];
+    else DB_[n] = data[i];
+  });
+  return DB_;
+}
+
+function pad_(r) {
+  const a = r.map(v => (v == null ? '' : String(v)));
+  while (a.length < WIDTH_) a.push('');
+  return a;
+}
+
+function readRowsDirect_(name) {
+  const s = sh_(name);
+  const last = s.getLastRow();
+  if (last < 2) return [];
+  return s.getRange(2, 1, last - 1, s.getLastColumn()).getDisplayValues().map(pad_);
+}
+
+function readRows_(name) {
+  const rows = db_()[name];
+  if (!rows) sh_(name); // シートがなければ分かりやすいエラーを出す
+  return rows || [];
+}
+
+function dirty_() { DB_ = null; }
+
+/** シートがなくても空として読む（後から追加したシート用） */
+function readRowsOpt_(name) { return db_()[name] || []; }
+
+/** シートがなければ見出し付きで作る */
+function ensureSheet_(name, header) {
+  const ss = ss_();
+  let s = ss.getSheetByName(name);
+  if (!s) {
+    s = ss.insertSheet(name);
+    s.getRange(1, 1, s.getMaxRows(), header.length).setNumberFormat('@');
+    s.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#e8eef5');
+    s.setFrozenRows(1);
+    dirty_();
+  }
+  return s;
+}
+
+function writeRow_(s, row, values) {
+  dirty_();
+  const r = s.getRange(row, 1, 1, values.length);
+  r.setNumberFormat('@');
+  r.setValues([values.map(v => (v == null ? '' : String(v)))]);
+}
+
+function appendRow_(s, values) { writeRow_(s, s.getLastRow() + 1, values); }
+
+function writeCell_(s, row, col, value) {
+  dirty_();
+  s.getRange(row, col).setNumberFormat('@').setValue(String(value));
+}
+
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+
+function toast_(msg) {
+  try { ss_().toast(msg, 'パトロール', 6); } catch (e) { console.log(msg); }
+}
+
+function range_(n) { return Array.from({ length: n }, (_, i) => i); }
+function pad2_(n) { return String(n).padStart(2, '0'); }
+function now_() { return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm'); }
+function today_() { return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd'); }
+function monthOf_(d) { return String(d).slice(0, 7); }
+function isDate_(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s)); }
+function assertYm_(ym) { if (!/^\d{4}-\d{2}$/.test(String(ym))) throw new Error('月の指定が不正です'); }
+
+function addMonths_(ym, n) {
+  let [y, m] = ym.split('-').map(Number);
+  m += n;
+  while (m > 12) { m -= 12; y++; }
+  while (m < 1) { m += 12; y--; }
+  return `${y}-${pad2_(m)}`;
+}
+
+function daysInMonth_(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+function datesOf_(ym) { return range_(daysInMonth_(ym)).map(i => `${ym}-${pad2_(i + 1)}`); }
+
+function utc_(d) { const [y, m, dd] = d.split('-').map(Number); return Date.UTC(y, m - 1, dd); }
+function daysBetween_(a, b) { return Math.round((utc_(b) - utc_(a)) / 864e5); }
+function wd_(d) { return '日月火水木金土'[new Date(utc_(d)).getUTCDay()]; }
+function md_(d) { const p = d.split('-').map(Number); return `${p[1]}/${p[2]}(${wd_(d)})`; }
+function ymLabel_(ym) { const [y, m] = ym.split('-').map(Number); return `${y}年${m}月`; }
+function countBy_(arr) { const o = {}; arr.forEach(x => { o[x] = (o[x] || 0) + 1; }); return o; }

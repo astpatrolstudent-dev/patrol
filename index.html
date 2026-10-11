@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>パトロールシフト</title>
+<style>
+:root{
+  --bg:#f4f5f7;--card:#fff;--text:#1d2330;--sub:#6a7385;--line:#e2e5eb;
+  --accent:#2f6fde;--accent-weak:#e8f0fd;
+  --ok:#1b8f4c;--ok-weak:#e3f5ea;--warn:#b7750b;--warn-weak:#fdf2dd;--ng:#cc3e34;--ng-weak:#fcebe9;
+  --sat:#2f6fde;--sun:#cc3e34;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#121519;--card:#1b1f26;--text:#e7e9ee;--sub:#9aa3b2;--line:#2b313b;
+    --accent:#6c9df2;--accent-weak:#1d2a40;
+    --ok:#4cc27e;--ok-weak:#15281d;--warn:#e2a843;--warn-weak:#2d2514;--ng:#ef6b61;--ng-weak:#321b1a;
+    --sat:#6c9df2;--sun:#ef6b61;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;font-size:15px;line-height:1.5}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line)}
+.demo{background:var(--warn-weak);color:var(--warn);text-align:center;font-size:12px;padding:4px 16px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px 4px;max-width:760px;margin:0 auto}
+.top h1{font-size:16px;margin:0;white-space:nowrap}
+.me{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)}
+nav{display:flex;max-width:760px;margin:0 auto}
+nav button{flex:1;border:0;background:none;padding:10px 4px;font:inherit;font-size:14px;color:var(--sub);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
+nav button.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+main{max-width:760px;margin:0 auto;padding:14px 16px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.card h2{font-size:15px;margin:0 0 10px}
+.muted{color:var(--sub);font-size:13px}
+.big{font-size:24px;font-weight:700;margin:2px 0}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.between{justify-content:space-between}
+.mt{margin-top:10px}
+select,input{font:inherit;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);max-width:100%}
+.btn{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--text);padding:8px 14px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.small{padding:5px 10px;font-size:13px}
+.btn:disabled{opacity:.45;cursor:default}
+.badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.b-ok{background:var(--ok-weak);color:var(--ok)}.b-warn{background:var(--warn-weak);color:var(--warn)}
+.b-ng{background:var(--ng-weak);color:var(--ng)}.b-info{background:var(--accent-weak);color:var(--accent)}
+.list{border-top:1px solid var(--line)}
+.item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.date{width:72px;flex:none;font-variant-numeric:tabular-nums}
+.sat{color:var(--sat)}.sun{color:var(--sun)}
+.grow{flex:1;min-width:110px}
+.marks{display:flex;gap:4px}
+.mk{width:42px;height:34px;border:1px solid var(--line);background:var(--card);border-radius:8px;font:inherit;font-size:16px;cursor:pointer;color:var(--sub)}
+.mk.on.m0{background:var(--ok-weak);border-color:var(--ok);color:var(--ok);font-weight:700}
+.mk.on.m1{background:var(--warn-weak);border-color:var(--warn);color:var(--warn);font-weight:700}
+.mk.on.m2{background:var(--ng-weak);border-color:var(--ng);color:var(--ng);font-weight:700}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:3px 10px;border-radius:999px;border:1px solid var(--line);font-size:13px}
+.warns{margin:8px 0 0;padding-left:18px;font-size:13px}
+.warns .error{color:var(--ng)}.warns .warn{color:var(--warn)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{border:1px solid var(--line);padding:4px 6px;text-align:center;white-space:nowrap}
+th{background:var(--bg);font-weight:600}
+.sticky-save{position:sticky;bottom:12px;display:flex;justify-content:flex-end;margin-top:12px}
+.sticky-save .btn{box-shadow:0 4px 14px rgba(0,0,0,.15)}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#222;color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90%;white-space:pre-wrap;z-index:20}
+#toast.show{opacity:1}
+#busy{position:fixed;inset:0;display:none;z-index:15;align-items:center;justify-content:center;background:rgba(0,0,0,.08)}
+#busy.show{display:flex}
+.spin{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:r .8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+a{color:var(--accent)}
+.form{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center}
+.form label{font-size:13px;color:var(--sub);white-space:nowrap}
+.form input,.form textarea{width:100%}
+textarea{font:inherit;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);resize:vertical}
+.addrow{display:grid;grid-template-columns:1fr 80px;gap:8px}
+.addrow .full{grid-column:1/-1}
+@media (max-width:420px){nav button{font-size:12px;padding:10px 0}}
+.rep{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+.rep table{width:auto}
+.rep td.nm{background:#e2efda;color:#1d2330;font-weight:700}
+.rep td.empty{background:#ffff00}
+.rep td.l{text-align:left}.rep td.r{text-align:right}
+</style>
+</head>
+<body>
+<header>
+  <div class="demo" id="demo" hidden>デモ表示です（ダミーデータ・保存されません）。Apps Script にデプロイすると本番データで動きます。</div>
+  <div class="top">
+    <h1>パトロールシフト</h1>
+    <label class="me">あなた <select id="meSel"></select></label>
+  </div>
+  <nav>
+    <button data-act="tab" data-tab="today" class="on">今日</button>
+    <button data-act="tab" data-tab="shift">シフト</button>
+    <button data-act="tab" data-tab="vote">投票</button>
+    <button data-act="tab" data-tab="report">実績</button>
+    <button data-act="tab" data-tab="work">業務報告</button>
+    <button data-act="tab" data-tab="member">メンバー</button>
+  </nav>
+</header>
+<main id="view"></main>
+<div id="toast"></div>
+<div id="busy"><div class="spin"></div></div>
+
+<script>
+/* =========================================================
+ * 共通
+ * ========================================================= */
+const WD = '日月火水木金土';
+const MARKS = ['〇', '△', '×'];
+/* ▼ GitHub Pages などに置くときは、Apps Script のウェブアプリURL（…/exec）をここに入れる */
+const API_URL = 'https://script.google.com/macros/s/AKfycbwlrLlE35McokuwBRGVTUqssW0ksalqBjNe3-qA_JAGdUH0f9XGzssa0-U654Q6Tp-X/exec';
+
+const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
+const IS_DEMO = !IS_GAS && !API_URL;
+const S = { app: null, me: '', tab: 'today', ym: {}, cache: {}, edit: null, vote: null, exp: null, workName: '', wDraft: {}, wexp: null };
+
+async function api(fn, ...args) {
+  if (!IS_GAS && API_URL) {
+    // ログイン情報（Cookie）を送らずに呼ぶ → Keio等でログイン中のブラウザでも動く
+    let res;
+    try {
+      res = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ fn, args }),
+        credentials: 'omit',
+        redirect: 'follow',
+      });
+    } catch (e) {
+      throw new Error('サーバーにつながりませんでした。通信環境を確認してください');
+    }
+    let j;
+    try { j = await res.json(); }
+    catch (e) { throw new Error('サーバーの応答を読めませんでした。API_URL とデプロイ設定（アクセス：全員）を確認してください'); }
+    if (!j.ok) throw new Error(j.error);
+    return j.result;
+  }
+  if (IS_DEMO) {
+    return new Promise((res, rej) => setTimeout(() => {
+      try { res(JSON.parse(JSON.stringify(Mock[fn](...args)))); } catch (e) { rej(e); }
+    }, 120));
+  }
+  return new Promise((res, rej) =>
+    google.script.run.withSuccessHandler(res).withFailureHandler(rej)[fn](...args));
+}
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pad2 = n => String(n).padStart(2, '0');
+function wdIdx(d) { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).getDay(); }
+function md(d) { const p = d.split('-').map(Number); return `${p[1]}/${p[2]}(${WD[wdIdx(d)]})`; }
+function wdc(d) { const w = wdIdx(d); return w === 0 ? 'sun' : w === 6 ? 'sat' : ''; }
+function ymLabel(ym) { const [y, m] = ym.split('-').map(Number); return `${y}年${m}月`; }
+function addM(ym, n) { let [y, m] = ym.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${pad2(m)}`; }
+function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function markCls(v) { return v === '〇' ? 'b-ok' : v === '△' ? 'b-warn' : v === '×' ? 'b-ng' : 'b-info'; }
+
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+function download(base64, name, type) {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+let busyTimer;
+function busy(on) {
+  clearTimeout(busyTimer);
+  if (on) busyTimer = setTimeout(() => $('#busy').classList.add('show'), 200); // 一瞬で終わる処理ではくるくるを出さない
+  else $('#busy').classList.remove('show');
+}
+async function run(task) {
+  busy(true);
+  try { return await task(); }
+  catch (e) { toast((e && e.message) || String(e)); return null; }
+  finally { busy(false); }
+}
+/** 隣の月を裏で先読みしておく（タブ・月の切り替えを待たせない） */
+function prefetch(ym) { if (!S.cache[ym]) api('getMonthData', ym).then(put).catch(() => {}); }
+
+async function month(ym, force) {
+  if (force || !S.cache[ym]) S.cache[ym] = await api('getMonthData', ym);
+  return S.cache[ym];
+}
+function put(d) { if (d && d.ym) S.cache[d.ym] = d; return d; }
+
+function activeNames() { return S.app.members.filter(m => m.active).map(m => m.name); }
+function memberSelect(attrs, selected, emptyLabel) {
+  const names = activeNames();
+  if (selected && names.indexOf(selected) < 0) names.push(selected);
+  return `<select ${attrs}><option value="">${emptyLabel || '選択'}</option>` +
+    names.map(n => `<option ${n === selected ? 'selected' : ''}>${esc(n)}</option>`).join('') + '</select>';
+}
+function monthNav(key, ym) {
+  return `<div class="card row between" style="padding:8px 12px">
+    <button class="btn small" data-act="mon" data-k="${key}" data-d="-1">‹ 前月</button>
+    <b>${ymLabel(ym)}</b>
+    <button class="btn small" data-act="mon" data-k="${key}" data-d="1">次月 ›</button></div>`;
+}
+
+/* =========================================================
+ * 画面
+ * ========================================================= */
+async function render() {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
+  const views = { today: vToday, shift: vShift, vote: vVote, report: vReport, work: vWork, member: vMember };
+  busy(true);
+  try { $('#view').innerHTML = await views[S.tab](); }
+  catch (e) { $('#view').innerHTML = errorCard(e); }
+  finally { busy(false); }
+}
+function errorCard(e) {
+  return `<div class="card">読み込みに失敗しました：${esc((e && e.message) || e)}
+    <p class="muted">コードを貼り替えた直後なら、Apps Script の「デプロイを管理 → 編集 → バージョン：新バージョン」で更新したか確認してください。</p></div>`;
+}
+
+function renderMe() {
+  $('#meSel').innerHTML = '<option value="">未選択</option>' +
+    activeNames().map(n => `<option ${n === S.me ? 'selected' : ''}>${esc(n)}</option>`).join('');
+}
+
+/* ---------- 今日 ---------- */
+async function vToday() {
+  const t = S.app.today;
+  const d = await month(t.slice(0, 7));
+  const who = d.shifts[t] || '';
+  const rep = d.reports[t];
+  let h = `<div class="card"><div class="muted">今日 ${md(t)} の担当</div>
+    <div class="big">${who ? esc(who) : '<span class="muted">未設定</span>'}</div>`;
+  if (rep) {
+    h += `<div class="row mt"><span class="badge b-ok">完了</span>
+      <span class="muted">${esc(rep.name)}・${esc(rep.at)}</span>
+      <button class="btn small" data-act="unreport" data-date="${t}">取り消す</button></div>`;
+  } else {
+    h += `<div class="row mt"><span class="muted">実施者</span>
+      ${memberSelect(`id="rep-${t}"`, who || S.me)}
+      <button class="btn primary" data-act="report" data-date="${t}">完了報告</button></div>`;
+  }
+  h += '</div>';
+
+  // 報告がない日（今月の過去日＋月初1週間は前月分も）
+  let pend = d.dates.filter(x => x < t && !d.reports[x]).map(x => [x, d]);
+  if (Number(t.slice(8)) <= 7) {
+    const p = await month(addM(t.slice(0, 7), -1));
+    pend = p.dates.filter(x => !p.reports[x] && p.shifts[x] !== undefined).map(x => [x, p]).concat(pend);
+  }
+  h += `<div class="card"><h2>まだ報告がない日</h2>`;
+  if (!pend.length) h += '<div class="muted">ありません</div>';
+  else {
+    h += '<div class="list">' + pend.map(([x, m]) => `<div class="item">
+      <span class="date ${wdc(x)}">${md(x)}</span>
+      <span class="grow muted">担当：${esc(m.shifts[x] || '未設定')}</span>
+      ${memberSelect(`id="rep-${x}"`, m.shifts[x] || S.me)}
+      <button class="btn small" data-act="report" data-date="${x}">報告</button></div>`).join('') + '</div>';
+  }
+  h += '</div>';
+
+  // 自分の今月の担当日
+  if (S.me) {
+    const mine = d.dates.filter(x => x >= t && d.shifts[x] === S.me);
+    h += `<div class="card"><h2>${esc(S.me)}さんのこれからの担当（今月）</h2>
+      ${mine.length ? `<div class="chips">${mine.map(x => `<span class="chip ${wdc(x)}">${md(x)}</span>`).join('')}</div>` : '<div class="muted">なし</div>'}</div>`;
+  }
+  return h;
+}
+
+/* ---------- シフト ---------- */
+function markOf(d, who, i) {
+  const v = d.votes[who] && d.votes[who].answers[i];
+  return v || (d.deadlinePassed ? '△' : '?');
+}
+async function vShift() {
+  const ym = S.ym.shift;
+  const d = await month(ym);
+  const st = d.setting.status;
+  const fixed = st === '確定';
+  if (!S.edit || S.edit.ym !== ym) S.edit = { ym, map: Object.assign({}, d.shifts), dirty: false };
+  const map = S.edit.map;
+
+  const counts = {};
+  d.members.forEach(n => { counts[n] = 0; });
+  d.dates.forEach(x => { if (map[x]) counts[map[x]] = (counts[map[x]] || 0) + 1; });
+  const triN = d.dates.filter((x, i) => map[x] && markOf(d, map[x], i) === '△').length;
+
+  let h = monthNav('shift', ym);
+  h += `<div class="card"><div class="row between">
+    <span class="badge ${fixed ? 'b-ok' : st === '下書き' ? 'b-warn' : 'b-info'}">${st}</span><div class="row">`;
+  if (fixed) h += `<button class="btn" data-act="unfix">確定を解除</button>`;
+  else {
+    h += `<button class="btn" data-act="gen">${st === '未作成' ? '自動生成' : '作り直す'}</button>`;
+    if (st === '下書き') h += `<button class="btn primary" data-act="fix">確定する</button>`;
+  }
+  h += '</div></div>';
+  if (st === '未作成') {
+    h += d.unanswered.length
+      ? `<p class="muted">未回答：${d.unanswered.map(esc).join('、')}${d.deadlinePassed ? '（締切済みなので△扱いで作成できます）' : ''}</p>`
+      : '<p class="muted">全員回答済みです。「自動生成」で下書きを作れます。</p>';
+  }
+  if (d.warnings.length) {
+    h += `<ul class="warns">${d.warnings.map(w => `<li class="${w.level}">${md(w.date)} ${esc(w.text)}</li>`).join('')}</ul>`;
+  }
+  h += `<div class="chips mt">${Object.keys(counts).map(n => `<span class="chip">${esc(n)} <b>${counts[n]}</b></span>`).join('')}</div>`;
+  if (triN) h += `<div class="muted mt">△の人が入っている日：${triN}日</div>`;
+  h += '</div>';
+
+  h += '<div class="card"><div class="list">' + d.dates.map((x, i) => {
+    const who = map[x] || '';
+    const mk = who ? markOf(d, who, i) : '';
+    return `<div class="item"><span class="date ${wdc(x)}">${md(x)}</span>
+      <span class="grow">${fixed ? `<b>${esc(who || '—')}</b>` : memberSelect(`data-shift="${x}"`, who, '（なし）')}</span>
+      ${mk ? `<span class="badge ${markCls(mk)}">${mk}</span>` : ''}
+      ${d.reports[x] ? '<span class="badge b-ok">済</span>' : ''}</div>`;
+  }).join('') + '</div>';
+  if (!fixed) h += `<div class="sticky-save"><button class="btn primary" data-act="saveShift" ${S.edit.dirty ? '' : 'disabled'}>変更を保存</button></div>`;
+  h += '</div>';
+  return h;
+}
+
+/* ---------- 投票 ---------- */
+function loadVote(d, name) {
+  const a = (name && d.votes[name] && d.votes[name].answers) || d.dates.map(() => '');
+  S.vote = { ym: d.ym, name, answers: a.slice(), dirty: false };
+}
+async function vVote() {
+  const ym = S.ym.vote;
+  const d = await month(ym);
+  const fixed = d.setting.status === '確定';
+  if (!S.vote || S.vote.ym !== ym) loadVote(d, S.me);
+  const v = S.vote;
+
+  let h = monthNav('vote', ym);
+  h += `<div class="card"><h2>回答状況</h2><div class="chips">` +
+    d.members.map(n => `<span class="chip">${d.unanswered.indexOf(n) < 0 ? '✓' : '未'} ${esc(n)}</span>`).join('') +
+    `</div><div class="row mt"><span class="muted">締切</span>
+      <input type="date" id="dl" value="${esc(d.setting.deadline)}">
+      <button class="btn small" data-act="dl">設定</button>
+      <button class="btn small" data-act="dlclear">締切なし</button>
+      <span class="muted">${d.setting.deadline ? (d.deadlinePassed ? '締切済み（未回答は△扱い）' : '') : '現在：締切なし'}</span></div></div>`;
+
+  h += `<div class="card"><div class="row between"><h2 style="margin:0">担当可否を回答</h2>
+    ${memberSelect('id="voteName"', v.name, '名前を選択')}</div>`;
+  if (fixed) h += '<p class="muted">この月のシフトは確定済みのため、回答は変更できません。</p>';
+  else if (!v.name) h += '<p class="muted">名前を選ぶと回答できます。</p>';
+  else {
+    const blanks = v.answers.filter(x => !x).length;
+    h += `<div class="row mt"><span class="muted">まとめて：</span>
+      ${MARKS.map((m, k) => `<button class="btn small" data-act="vall" data-v="${m}">すべて${m}</button>`).join('')}
+      <span class="muted">${blanks ? `未入力 ${blanks}日` : '全日入力済み'}</span></div>
+      <div class="list mt">` + d.dates.map((x, i) => `<div class="item">
+        <span class="date ${wdc(x)}">${md(x)}</span><span class="grow"></span>
+        <span class="marks">${MARKS.map((m, k) => `<button class="mk m${k} ${v.answers[i] === m ? 'on' : ''}" data-act="vmk" data-i="${i}" data-v="${m}">${m}</button>`).join('')}</span>
+      </div>`).join('') + `</div>
+      <div class="sticky-save"><button class="btn primary" data-act="vsave" ${v.dirty ? '' : 'disabled'}>回答を保存</button></div>`;
+  }
+  h += '</div>';
+
+  h += `<div class="card"><details><summary>全員の回答一覧</summary><div class="scroll mt"><table>
+    <tr><th>日付</th>${d.members.map(n => `<th>${esc(n)}</th>`).join('')}</tr>` +
+    d.dates.map((x, i) => `<tr><td class="${wdc(x)}">${md(x)}</td>${d.members.map(n => {
+      const a = d.votes[n] && d.votes[n].answers[i];
+      return `<td>${a ? `<span class="badge ${markCls(a)}">${a}</span>` : '<span class="muted">-</span>'}</td>`;
+    }).join('')}</tr>`).join('') + '</table></div></details></div>';
+  return h;
+}
+
+/* ---------- 実績 ---------- */
+function summary(d) {
+  const month = {};
+  d.dates.forEach(x => { const r = d.reports[x]; if (r) month[r.name] = (month[r.name] || 0) + 1; });
+  const names = S.app.members.filter(m => m.active || month[m.name]).map(m => m.name);
+  Object.keys(month).forEach(n => { if (names.indexOf(n) < 0) names.push(n); });
+  const wh = S.app.workHours, mgr = S.app.manager, al = S.app.allowance;
+  return {
+    workHours: wh, manager: mgr, allowance: al,
+    days: d.dates.map(x => ({ date: x, name: d.reports[x] ? d.reports[x].name : '' })),
+    members: names.map(n => ({ name: n, count: month[n] || 0, hours: (month[n] || 0) * wh, allowance: n === mgr ? al : '', total: (d.totals || {})[n] || 0 })),
+  };
+}
+async function vReport() {
+  const ym = S.ym.report;
+  const r = summary(await month(ym));
+  const mNum = Number(ym.slice(5));
+  const done = r.days.filter(d => d.name).length;
+
+  let h = monthNav('report', ym);
+  h += `<div class="card"><div class="row between"><h2 style="margin:0">活動実績（プレビュー）</h2>
+    <button class="btn primary" data-act="export">スプシ＋PDFに出力</button></div>
+    <p class="muted">実施 ${done}日 ／ パトロールがなかった日は黄色で出力されます。${r.manager ? `管理者手当：${esc(r.manager)}（${r.allowance}h）` : '管理者が未設定です（メンバータブで設定）'}</p>`;
+  if (S.exp && S.exp.ym === ym) {
+    const e = S.exp;
+    h += `<div class="card" style="background:var(--ok-weak);border-color:transparent">` +
+      (e.demo ? 'デモでは出力されません。本番ではここにスプシとPDFのリンクが出ます。'
+        : `出力しました<div class="row mt">
+          <button class="btn small" data-act="dlpdf">PDFをダウンロード</button>
+          <a href="${esc(e.pdfUrl)}" target="_blank" rel="noopener">DriveでPDFを開く</a>
+          <a href="${esc(e.sheetUrl)}" target="_blank" rel="noopener">スプシで開く</a></div>`) + '</div>';
+  }
+  h += `<div class="rep scroll"><table><tr><th></th><th></th><th>担当</th><th>作業時間（h）</th></tr>` +
+    r.days.map(d => `<tr><td class="l">${mNum}/${Number(d.date.slice(8))}</td><td class="${wdc(d.date)}">${WD[wdIdx(d.date)]}</td>` +
+      (d.name ? `<td class="l"><b>${esc(d.name)}</b></td><td class="r">${r.workHours}</td>` : '<td class="empty"></td><td class="empty"></td>') + '</tr>').join('') +
+    `</table><div><table><tr><th>${mNum}月担当回数</th><th></th><th>作業時間</th><th>手当</th></tr>` +
+    r.members.map(m => `<tr><td class="nm">${esc(m.name)}</td><td>${m.count}回</td><td class="r">${m.hours}</td><td class="r">${m.allowance}</td></tr>`).join('') +
+    `</table><table class="mt"><tr><th>トータル担当回数</th><th></th></tr>` +
+    r.members.map(m => `<tr><td class="nm">${esc(m.name)}</td><td>${m.total}回</td></tr>`).join('') +
+    '</table></div></div></div>';
+  return h;
+}
+
+/* ---------- 業務報告（パトロール以外の業務） ---------- */
+async function vWork() {
+  const ym = S.ym.work;
+  const d = await month(ym);
+  const who = S.workName || S.me || '';
+  const m = S.app.members.find(x => x.name === who) || {};
+  const items = (d.work || {})[who] || [];
+  const fare = (d.fares || {})[who] || {};
+  const hours = items.reduce((a, it) => a + it.hours, 0);
+  const days = new Set(items.map(it => it.date)).size;
+  const first = d.dates[0], last = d.dates[d.dates.length - 1];
+  const defDate = S.app.today >= first && S.app.today <= last ? S.app.today : first;
+
+  let h = monthNav('work', ym);
+  h += `<div class="card"><div class="row between"><h2 style="margin:0">業務報告書</h2>
+    ${memberSelect('id="workName"', who, '報告者を選択')}</div>
+    <p class="muted">パトロール以外の業務をした人が、月ごとに作業を記録して報告書（Excel・PDF）を出力します。</p></div>`;
+  if (!who) return h + '<div class="card muted">報告者を選んでください。</div>';
+
+  h += `<div class="card"><details ${m.fullName ? '' : 'open'}><summary><b>報告者情報</b>
+      <span class="muted">${m.fullName ? esc(m.fullName) : '未入力（最初に入力してください）'}</span></summary>
+    <div class="form mt">
+      <label>氏名</label><input id="pfName" value="${esc(m.fullName || '')}" placeholder="亀田 智大">
+      <label>フリガナ</label><input id="pfKana" value="${esc(m.kana || '')}" placeholder="カメダ トモヒロ">
+      <label>日中連絡先</label><input id="pfTel" value="${esc(m.tel || '')}" placeholder="080-0000-0000" inputmode="tel">
+      <label>業務内容</label><textarea id="pfDuty" rows="2" placeholder="空欄ならテンプレートの文言のまま">${esc(m.duty || '')}</textarea>
+    </div>
+    <div class="row mt" style="justify-content:flex-end"><button class="btn" data-act="pfsave">報告者情報を保存</button></div>
+  </details></div>`;
+
+  h += `<div class="card"><h2>作業の記録（${items.length}/22行）</h2>`;
+  h += items.length ? '<div class="list">' + items.map(it => `<div class="item">
+      <span class="date ${wdc(it.date)}">${md(it.date)}</span>
+      <span style="width:52px">${it.hours}h</span>
+      <span class="grow">${esc(it.detail)}</span>
+      <button class="btn small" data-act="wdel" data-id="${esc(it.id)}">削除</button></div>`).join('') + '</div>'
+    : '<p class="muted">まだ記録がありません。</p>';
+  h += `<div class="chips mt"><span class="chip">作業時間 合計 <b>${hours}</b>時間</span><span class="chip">出勤 <b>${days}</b>日</span></div>
+    <div class="addrow mt">
+      <input type="date" id="wDate" min="${first}" max="${last}" value="${esc(S.wDraft.date && S.wDraft.date.slice(0, 7) === ym ? S.wDraft.date : defDate)}">
+      <input type="number" id="wHours" min="0.25" max="24" step="0.25" placeholder="時間" value="${esc(S.wDraft.hours || '')}">
+      <input class="full" id="wDetail" placeholder="作業詳細（例：北九州市特集ページ作成）" value="${esc(S.wDraft.detail || '')}">
+      <button class="btn primary full" data-act="wadd">記録を追加</button>
+    </div></div>`;
+
+  h += `<div class="card"><h2>実費交通費（任意）</h2>
+    <div class="row"><span class="muted">往復</span><input id="fFare" type="number" min="0" step="1" style="width:110px" value="${esc(fare.fare === undefined ? '' : fare.fare)}"><span class="muted">円 ×</span>
+      <input id="fDays" type="number" min="0" max="31" step="1" style="width:70px" placeholder="${days}" value="${esc(fare.days === undefined ? '' : fare.days)}"><span class="muted">日</span>
+      <button class="btn small" data-act="fsave">保存</button></div>
+    <p class="muted">日数を空欄にすると、出勤日数（${days}日）で計算します。交通費がなければ空欄のままで大丈夫です。</p></div>`;
+
+  h += `<div class="card"><button class="btn primary" style="width:100%" data-act="wexport" ${items.length ? '' : 'disabled'}>業務報告書を出力（PDF＋Excel）</button>`;
+  if (S.wexp && S.wexp.key === ym + '|' + who) {
+    const e = S.wexp;
+    h += e.demo ? '<p class="muted">デモでは出力されません。本番ではここで PDF と Excel がダウンロードされます。</p>'
+      : `<div class="row mt"><button class="btn small" data-act="wdl" data-k="pdf">PDFをダウンロード</button>
+          <button class="btn small" data-act="wdl" data-k="xlsx">Excelをダウンロード</button>
+          <a href="${esc(e.folderUrl)}" target="_blank" rel="noopener">保存先フォルダを開く</a></div>`;
+  }
+  return h + '</div>';
+}
+
+/* ---------- メンバー ---------- */
+function vMember() {
+  const ms = S.app.members;
+  let h = `<div class="card"><h2>メンバー</h2><div class="list">` + ms.map(m => `<div class="item">
+    <span class="grow">${esc(m.name)}</span>
+    ${m.active ? '<span class="badge b-ok">参加中</span>' : '<span class="badge b-info">休止</span>'}
+    <button class="btn small" data-act="mtoggle" data-name="${esc(m.name)}" data-active="${m.active ? '' : '1'}">${m.active ? '休止にする' : '戻す'}</button>
+  </div>`).join('') + `</div>
+  <div class="row mt"><input id="newMember" placeholder="名前を追加"><button class="btn primary" data-act="madd">追加</button></div>
+  <p class="muted">休止にした人はシフト・投票の対象から外れます（過去の実績は残ります）。</p></div>`;
+
+  h += `<div class="card"><h2>管理者（名目）</h2>
+    <div class="row">${memberSelect('id="mgrSel"', S.app.manager, 'なし')}<span class="muted">活動実績で手当 ${S.app.allowance}時間が付きます</span></div></div>`;
+
+  const n = S.app.notify;
+  h += `<div class="card"><h2>通知（毎日22時台）</h2>
+    <div class="chips"><span class="chip">Slack：${n.slack ? '設定済み' : '未設定'}</span><span class="chip">LINE：${n.line ? '設定済み' : '未設定'}</span></div>
+    <p class="muted">送信先はスプレッドシートの「設定」シートで変更します。</p>
+    <button class="btn" data-act="testNotify">テスト送信</button></div>
+    <p class="muted" style="text-align:center">バージョン ${esc(S.app.version || '?')}</p>`;
+  return h;
+}
+
+/* =========================================================
+ * 操作
+ * ========================================================= */
+const ACT = {
+  tab(b) { S.tab = b.dataset.tab; render(); },
+  mon(b) {
+    const k = b.dataset.k, dlt = Number(b.dataset.d);
+    S.ym[k] = addM(S.ym[k], dlt); S.exp = null; S.wexp = null;
+    render().then(() => prefetch(addM(S.ym[k], dlt)));
+  },
+
+  // 完了報告は画面に先に反映し、保存は裏で行う（失敗したら元に戻す）
+  async report(b) {
+    const date = b.dataset.date;
+    const name = $('#rep-' + date).value;
+    if (!name) return toast('実施者を選んでください');
+    const d = S.cache[date.slice(0, 7)];
+    const before = d && d.reports[date];
+    if (d) { d.reports[date] = { name, at: '保存中…' }; render(); }
+    toast('完了報告しました');
+    try { put(await api('reportDone', date, name)); }
+    catch (e) {
+      if (d) { if (before) d.reports[date] = before; else delete d.reports[date]; }
+      toast('保存に失敗しました。もう一度お試しください\n' + ((e && e.message) || e));
+    }
+    render();
+  },
+  async unreport(b) {
+    if (!confirm('この日の完了報告を取り消しますか？')) return;
+    const date = b.dataset.date;
+    const d = S.cache[date.slice(0, 7)];
+    const before = d && d.reports[date];
+    if (d) { delete d.reports[date]; render(); }
+    try { put(await api('cancelReport', date)); }
+    catch (e) {
+      if (d && before) d.reports[date] = before;
+      toast('取り消しに失敗しました\n' + ((e && e.message) || e));
+    }
+    render();
+  },
+
+  async gen() {
+    const ym = S.ym.shift;
+    if (S.cache[ym].setting.status === '下書き' && !confirm('今の下書きを破棄して作り直しますか？')) return;
+    if (put(await run(() => api('generateShift', ym)))) { S.edit = null; toast('下書きを作成しました'); render(); }
+  },
+  async saveShift() {
+    if (put(await run(() => api('saveShift', S.edit.ym, S.edit.map)))) { S.edit = null; toast('保存しました'); render(); }
+  },
+  async fix() {
+    if (S.edit && S.edit.dirty) return toast('先に「変更を保存」してください');
+    const d = S.cache[S.ym.shift];
+    const errs = d.warnings.filter(w => w.level === 'error').length;
+    if (!confirm(errs ? `注意が${errs}件ありますが確定しますか？` : 'このシフトで確定しますか？')) return;
+    if (put(await run(() => api('setShiftStatus', S.ym.shift, '確定')))) { S.edit = null; toast('確定しました'); render(); }
+  },
+  async unfix() {
+    if (!confirm('確定を解除して編集できる状態に戻しますか？')) return;
+    if (put(await run(() => api('setShiftStatus', S.ym.shift, '下書き')))) { S.edit = null; render(); }
+  },
+
+  vmk(b) { S.vote.answers[Number(b.dataset.i)] = b.dataset.v; S.vote.dirty = true; render(); },
+  vall(b) { S.vote.answers = S.vote.answers.map(() => b.dataset.v); S.vote.dirty = true; render(); },
+  async vsave() {
+    const v = S.vote;
+    const blanks = v.answers.filter(x => !x).length;
+    if (blanks && !confirm(`未入力の日が${blanks}日あります（未入力のままだと「未回答」扱い）。保存しますか？`)) return;
+    const r = put(await run(() => api('saveVote', v.ym, v.name, v.answers)));
+    if (r) {
+      v.dirty = false;
+      toast(r.autoGenerated ? '保存しました。全員そろったのでシフト下書きを作成しました' : '保存しました');
+      S.edit = null; render();
+    }
+  },
+  async dl() {
+    const val = $('#dl').value;
+    if (!val) return toast('日付を選んでください');
+    if (put(await run(() => api('setDeadline', S.ym.vote, val)))) { toast('締切を設定しました'); render(); }
+  },
+  async dlclear() {
+    if (put(await run(() => api('setDeadline', S.ym.vote, '')))) { toast('締切なしにしました'); render(); }
+  },
+
+  async export() {
+    const ym = S.ym.report;
+    const r = await run(() => api('exportReport', ym));
+    if (r) { S.exp = Object.assign({ ym }, r); render(); if (!r.demo) ACT.dlpdf(); }
+  },
+  async pfsave() {
+    const p = { fullName: $('#pfName').value, kana: $('#pfKana').value, tel: $('#pfTel').value, duty: $('#pfDuty').value };
+    const r = await run(() => api('saveProfile', S.workName || S.me, p));
+    if (r) { S.app = r; toast('報告者情報を保存しました'); render(); }
+  },
+  async wadd() {
+    const date = $('#wDate').value, hours = $('#wHours').value, detail = $('#wDetail').value.trim();
+    S.wDraft = { date, hours, detail };
+    if (!date) return toast('日付を選んでください');
+    if (!hours) return toast('作業時間を入力してください');
+    if (!detail) return toast('作業詳細を入力してください');
+    const r = put(await run(() => api('addWork', S.workName || S.me, date, Number(hours), detail)));
+    if (r) { S.wDraft = { date }; toast('追加しました'); render(); }
+  },
+  async wdel(b) {
+    if (!confirm('この記録を削除しますか？')) return;
+    if (put(await run(() => api('deleteWork', b.dataset.id)))) render();
+  },
+  async fsave() {
+    const r = put(await run(() => api('saveFare', S.ym.work, S.workName || S.me, $('#fFare').value, $('#fDays').value)));
+    if (r) { toast('交通費を保存しました'); render(); }
+  },
+  async wexport() {
+    const ym = S.ym.work, who = S.workName || S.me;
+    const r = await run(() => api('exportWorkReport', ym, who));
+    if (r) {
+      S.wexp = Object.assign({ key: ym + '|' + who }, r); render();
+      if (!r.demo) { download(r.pdf.base64, r.pdf.name, 'application/pdf'); setTimeout(() => download(r.xlsx.base64, r.xlsx.name, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), 600); }
+    }
+  },
+  wdl(b) {
+    const f = S.wexp && S.wexp[b.dataset.k];
+    if (f) download(f.base64, f.name, b.dataset.k === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  },
+
+  dlpdf() {
+    const e = S.exp;
+    if (!e || !e.pdfBase64) return;
+    const bin = atob(e.pdfBase64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = e.fileName; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  },
+
+  async madd() {
+    const name = $('#newMember').value.trim();
+    if (!name) return toast('名前を入力してください');
+    const r = await run(() => api('addMember', name));
+    if (r) { S.app = r; S.cache = {}; prefetch(S.app.thisMonth); prefetch(S.app.nextMonth); S.edit = null; renderMe(); toast('追加しました'); render(); }
+  },
+  async mtoggle(b) {
+    const r = await run(() => api('setMemberActive', b.dataset.name, !!b.dataset.active));
+    if (r) { S.app = r; S.cache = {}; prefetch(S.app.thisMonth); prefetch(S.app.nextMonth); S.edit = null; renderMe(); render(); }
+  },
+  async testNotify() {
+    const r = await run(() => api('testNotify'));
+    if (r) toast(r);
+  },
+};
+
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]');
+  if (b && !b.disabled && ACT[b.dataset.act]) ACT[b.dataset.act](b);
+});
+document.addEventListener('change', e => {
+  const t = e.target;
+  if (t.id === 'meSel') { S.me = t.value; S.workName = ''; lsSet('patrol_me', S.me); if (S.vote && !S.vote.dirty) S.vote = null; render(); }
+  else if (t.id === 'workName') { S.workName = t.value; S.wexp = null; render(); }
+  else if (t.id === 'mgrSel') {
+    run(() => api('setManager', t.value)).then(r => { if (r) { S.app = r; toast('管理者を変更しました'); render(); } });
+  }
+  else if (t.dataset.shift) { S.edit.map[t.dataset.shift] = t.value; S.edit.dirty = true; render(); }
+  else if (t.id === 'voteName') {
+    if (S.vote.dirty && !confirm('保存していない回答があります。破棄して切り替えますか？')) { t.value = S.vote.name; return; }
+    loadVote(S.cache[S.ym.vote], t.value); render();
+  }
+});
+window.addEventListener('beforeunload', e => {
+  if ((S.vote && S.vote.dirty) || (S.edit && S.edit.dirty)) { e.preventDefault(); e.returnValue = ''; }
+});
+
+async function init() {
+  if (IS_DEMO) $('#demo').hidden = false;
+  busy(true);
+  try {
+    S.app = await api('getBootstrap');
+    Object.keys(S.app.months || {}).forEach(ym => put(S.app.months[ym]));
+    delete S.app.months;
+  }
+  catch (e) { $('#view').innerHTML = errorCard(e); return; }
+  finally { busy(false); }
+  S.me = lsGet('patrol_me');
+  if (activeNames().indexOf(S.me) < 0) S.me = '';
+  const day = Number(S.app.today.slice(8));
+  S.ym = {
+    shift: S.app.thisMonth,
+    vote: S.app.nextMonth,
+    report: day <= 10 ? addM(S.app.thisMonth, -1) : S.app.thisMonth,
+    work: day <= 10 ? addM(S.app.thisMonth, -1) : S.app.thisMonth,
+  };
+  renderMe();
+  render();
+}
+
+/* =========================================================
+ * デモ用の仮バックエンド（Apps Script 上では使われない）
+ * ========================================================= */
+function buildShift(n, names, avail, prevLast, iterations) {
+  const rank = v => (v === '〇' ? 0 : v === '△' ? 1 : 9);
+  let best = null;
+  for (let it = 0; it < iterations; it++) {
+    const a = new Array(n).fill(''); const c = {}; names.forEach(nm => { c[nm] = 0; });
+    const canPut = (nm, i) => {
+      if (rank(avail[nm][i]) === 9) return false;
+      const l = i === 0 ? (prevLast || '') : a[i - 1]; const r = i === n - 1 ? '' : a[i + 1];
+      return nm !== l && nm !== r;
+    };
+    const order = [...Array(n).keys()].map(i => ({ i, o: names.filter(nm => avail[nm][i] === '〇').length, t: names.filter(nm => avail[nm][i] === '△').length, r: Math.random() }))
+      .sort((x, y) => x.o - y.o || x.t - y.t || x.r - y.r).map(x => x.i);
+    order.forEach(i => {
+      const ok = names.filter(nm => canPut(nm, i)); if (!ok.length) return;
+      const br = Math.min(...ok.map(nm => rank(avail[nm][i]))); const pool = ok.filter(nm => rank(avail[nm][i]) === br);
+      const mn = Math.min(...pool.map(nm => c[nm])); const top = pool.filter(nm => c[nm] === mn);
+      const p = top[Math.floor(Math.random() * top.length)]; a[i] = p; c[p]++;
+    });
+    let changed = true, guard = 0;
+    while (changed && guard++ < 1000) {
+      changed = false;
+      for (let i = 0; i < n; i++) {
+        const cur = a[i]; const rc = cur ? rank(avail[cur][i]) : 99;
+        for (const nm of names) {
+          if (nm === cur || !canPut(nm, i)) continue;
+          const rn = rank(avail[nm][i]);
+          if (rn < rc || (rn === rc && c[nm] + 1 < c[cur])) { a[i] = nm; c[nm]++; if (cur) c[cur]--; changed = true; break; }
+        }
+      }
+    }
+    const score = a.filter(x => !x).length * 1e6 + a.filter((x, i) => x && avail[x][i] === '△').length * 1e3 + names.reduce((s, nm) => s + c[nm] * c[nm], 0);
+    if (!best || score < best.score) best = { assign: a.slice(), score };
+  }
+  return best;
+}
+
+const Mock = !IS_DEMO ? null : (() => {
+  const now = new Date();
+  const today = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const thisM = today.slice(0, 7), nextM = addM(thisM, 1);
+  const stamp = () => `${today} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const days = ym => { const [y, m] = ym.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+  const dates = ym => Array.from({ length: days(ym) }, (_, i) => `${ym}-${pad2(i + 1)}`);
+  const db = {
+    members: ['佐藤', '鈴木', '高橋', '田中', '伊藤', '渡辺', '山本', '中村'].map((n, i) => ({ name: n, active: true, slackId: '', baseCount: [120, 98, 76, 54, 40, 22, 10, 0][i] })),
+    manager: '高橋',
+    months: {}, votes: {}, shifts: {}, reports: {}, work: [], fares: {},
+  };
+  const active = () => db.members.filter(m => m.active).map(m => m.name);
+  const setting = ym => db.months[ym] || { deadline: '', status: '未作成' };
+  const randVote = n => Array.from({ length: n }, () => { const r = Math.random(); return r < 0.6 ? '〇' : r < 0.82 ? '△' : '×'; });
+
+  function data(ym) {
+    const ds = dates(ym), members = active(), st = setting(ym);
+    const votes = {};
+    members.forEach(n => { const a = db.votes[ym + '|' + n]; if (a) votes[n] = { answers: a.slice(), updatedAt: '' }; });
+    const shifts = {}; ds.forEach(d => { if (db.shifts[d] !== undefined) shifts[d] = db.shifts[d]; });
+    const reports = {}; ds.forEach(d => { if (db.reports[d]) reports[d] = db.reports[d]; });
+    const unanswered = members.filter(n => !votes[n] || votes[n].answers.some(v => !v));
+    const deadlinePassed = !!st.deadline && today > st.deadline;
+    const pd = dates(addM(ym, -1)); const prevLast = db.shifts[pd[pd.length - 1]] || '';
+    const totals = {}; db.members.forEach(m => { totals[m.name] = m.baseCount || 0; });
+    Object.keys(db.reports).forEach(d => { if (d <= ds[ds.length - 1]) totals[db.reports[d].name] = (totals[db.reports[d].name] || 0) + 1; });
+    const md0 = { ym, dates: ds, members, setting: Object.assign({}, st), votes, shifts, reports, unanswered, deadlinePassed, prevLast, totals, today,
+      work: (() => { const o = {}; db.work.filter(w => w.date.slice(0, 7) === ym).sort((a, b) => (a.date < b.date ? -1 : 1)).forEach(w => { (o[w.name] = o[w.name] || []).push(Object.assign({}, w)); }); return o; })(),
+      fares: (() => { const o = {}; Object.keys(db.fares).forEach(k => { const [y, n] = k.split('|'); if (y === ym) o[n] = Object.assign({}, db.fares[k]); }); return o; })() };
+    const av = {}; members.forEach(n => { const a = (votes[n] || {}).answers || []; av[n] = ds.map((_, i) => a[i] || '△'); });
+    md0.warnings = [];
+    if (ds.some(d => shifts[d] !== undefined)) ds.forEach((d, i) => {
+      const w = shifts[d];
+      if (!w) { md0.warnings.push({ date: d, level: 'error', text: members.some(n => av[n][i] !== '×') ? '担当者が決まっていません' : '全員×のため担当者なし' }); return; }
+      if (av[w] && av[w][i] === '×') md0.warnings.push({ date: d, level: 'error', text: `${w}さんは×の日です` });
+      const p = i === 0 ? prevLast : shifts[ds[i - 1]];
+      if (p && p === w) md0.warnings.push({ date: d, level: 'warn', text: `${w}さんが2日連続です` });
+    });
+    return md0;
+  }
+  function gen(ym) {
+    const d = data(ym);
+    if (d.setting.status === '確定') throw new Error('確定済みです');
+    if (d.unanswered.length && !d.deadlinePassed) throw new Error(`まだ回答していない人がいます：${d.unanswered.join('、')}\n全員が回答するか、締切日を過ぎると作成できます。`);
+    const av = {}; d.members.forEach(n => { const a = (d.votes[n] || {}).answers || []; av[n] = d.dates.map((_, i) => a[i] || '△'); });
+    const r = buildShift(d.dates.length, d.members, av, d.prevLast, 200);
+    d.dates.forEach((x, i) => { db.shifts[x] = r.assign[i] || ''; });
+    db.months[ym] = Object.assign(setting(ym), { status: '下書き' });
+  }
+
+  // 初期データ：今月は確定済み＋報告あり、来月は6人回答済み
+  active().forEach(n => { db.votes[thisM + '|' + n] = randVote(days(thisM)); });
+  gen(thisM); db.months[thisM].status = '確定';
+  dates(thisM).forEach((d, i) => { if (d < today && i % 9 !== 4) db.reports[d] = { name: db.shifts[d] || '佐藤', at: d + ' 21:30' }; });
+  active().slice(0, 6).forEach(n => { db.votes[nextM + '|' + n] = randVote(days(nextM)); });
+
+  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: false }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ' });
+  return {
+    getAppData: app,
+    getBootstrap() { const a = app(); a.months = {}; [-1, 0, 1].forEach(k => { const ym = addM(thisM, k); a.months[ym] = data(ym); }); return a; },
+    getMonthData: data,
+    saveVote(ym, name, answers) {
+      if (setting(ym).status === '確定') throw new Error('確定済みのため変更できません');
+      db.votes[ym + '|' + name] = answers.slice();
+      let auto = false;
+      const d = data(ym);
+      if (d.members.length && !d.unanswered.length && d.setting.status === '未作成') { gen(ym); auto = true; }
+      return Object.assign(data(ym), { autoGenerated: auto });
+    },
+    setDeadline(ym, dl) { db.months[ym] = Object.assign(setting(ym), { deadline: dl }); return data(ym); },
+    generateShift(ym) { gen(ym); return data(ym); },
+    saveShift(ym, map) {
+      dates(ym).forEach(d => { db.shifts[d] = map[d] || ''; });
+      if (setting(ym).status === '未作成') db.months[ym] = Object.assign(setting(ym), { status: '下書き' });
+      return data(ym);
+    },
+    setShiftStatus(ym, status) { db.months[ym] = Object.assign(setting(ym), { status }); return data(ym); },
+    reportDone(date, name) { db.reports[date] = { name, at: stamp() }; return data(date.slice(0, 7)); },
+    cancelReport(date) { delete db.reports[date]; return data(date.slice(0, 7)); },
+    addMember(name) { const m = db.members.find(x => x.name === name); if (m) m.active = true; else db.members.push({ name, active: true, slackId: '' }); return app(); },
+    setMemberActive(name, active) { db.members.find(x => x.name === name).active = active; return app(); },
+    exportReport() { return { demo: true }; },
+    setManager(name) { db.manager = name; return app(); },
+    getReportPreview(ym) {
+      const ds = dates(ym), last = ds[ds.length - 1];
+      const month = {}; ds.forEach(d => { const r = db.reports[d]; if (r) month[r.name] = (month[r.name] || 0) + 1; });
+      const totals = {}; db.members.forEach(m => { totals[m.name] = m.baseCount || 0; });
+      Object.keys(db.reports).forEach(d => { if (d <= last) totals[db.reports[d].name] = (totals[db.reports[d].name] || 0) + 1; });
+      const names = db.members.filter(m => m.active || month[m.name]).map(m => m.name);
+      return { ym, workHours: 0.25, manager: db.manager, allowance: 3,
+        days: ds.map(d => ({ date: d, name: db.reports[d] ? db.reports[d].name : '' })),
+        members: names.map(n => ({ name: n, count: month[n] || 0, hours: (month[n] || 0) * 0.25, allowance: n === db.manager ? 3 : '', total: totals[n] || 0 })),
+        missing: ds.filter(d => !db.reports[d] && d <= today) };
+    },
+    testNotify() { throw new Error('デモでは通知は送られません'); },
+    saveProfile(name, p) { Object.assign(db.members.find(x => x.name === name), p); return app(); },
+    addWork(name, date, hours, detail) {
+      if (db.work.filter(w => w.name === name && w.date.slice(0, 7) === date.slice(0, 7)).length >= 22) throw new Error('業務報告書1枚に書けるのは22行までです');
+      db.work.push({ id: Math.random().toString(36).slice(2, 10), name, date, hours: Number(hours), detail }); return data(date.slice(0, 7));
+    },
+    deleteWork(id) { const w = db.work.find(x => x.id === id); db.work = db.work.filter(x => x.id !== id); return data(w.date.slice(0, 7)); },
+    saveFare(ym, name, fare, days) { db.fares[ym + '|' + name] = { fare: fare === '' ? '' : Number(fare), days: days === '' ? '' : Number(days) }; return data(ym); },
+    exportWorkReport() { return { demo: true }; },
+  };
+})();
+
+init();
+</script>
+</body>
+</html>
