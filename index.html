@@ -127,6 +127,9 @@ const LINKS = [
   { name: 'パトロール内容の報告先', desc: 'パトロールした内容を記入する Excel（OneDrive）', url: 'https://onedrive.live.com/:x:/g/personal/d70aea05e0cd23a5/UQClI83gBeoKIIDXuUYAAAAAALbBWOQXpO9OyWs?rtime=5iss2Nwo30g&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3gvcyFBcVVqemVBRjZnclhnWTA1dHNGWTVCZWs3MDdKYXc_ZT1jdWQzSmc' },
 ];
 
+/* ▼ 「メンバー」タブに表示するバックアップ（データの入ったスプレッドシート） */
+const BACKUP_LINK = { name: 'パトロールのスプレッドシート', desc: 'すべてのデータの保存先。サイトが使えないときはここを直接確認', url: 'https://docs.google.com/spreadsheets/d/1WMhp1ptPfDuiCkg7nSzGRGI-hBLNrbzhwA8Awx9kVug/edit?gid=1302097505#gid=1302097505' };
+
 const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
 const IS_DEMO = !IS_GAS && !API_URL;
 const S = { app: null, me: '', tab: 'today', ym: {}, cache: {}, edit: null, vote: null, exp: null, workName: '', wDraft: {}, wexp: null };
@@ -513,6 +516,14 @@ function vMember() {
   </div>`).join('') + `</div>
   <div class="row mt"><input id="newMember" placeholder="名前を追加"><button class="btn primary" data-act="madd">追加</button></div>
   <p class="muted">休止にした人はシフト・投票の対象から外れます（過去の実績は残ります）。</p></div>`;
+
+  if (BACKUP_LINK && BACKUP_LINK.url) {
+    h += `<div class="card"><h2>バックアップ</h2><div class="links">
+      <a class="link" href="${esc(BACKUP_LINK.url)}" target="_blank" rel="noopener">
+        <span><span class="ttl">${esc(BACKUP_LINK.name)}</span><br><span class="muted">${esc(BACKUP_LINK.desc)}</span></span>
+        <span class="go">↗</span></a></div>
+      <p class="muted">開けるのは、スプレッドシートを共有されている人だけです。</p></div>`;
+  }
 
   h += `<div class="card"><h2>管理者（名目）</h2>
     <div class="row">${memberSelect('id="mgrSel"', S.app.manager, 'なし')}<span class="muted">活動実績で手当 ${S.app.allowance}時間が付きます</span></div></div>`;
