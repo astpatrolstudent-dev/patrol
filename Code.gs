@@ -22,23 +22,54 @@ const SH = {
   SETTINGS: '設定',
   WORK: '業務報告',
   FARE: '業務報告_交通費',
+  PROFILE: '報告者情報',
 };
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.10';
+
+/*
+ * ▼ ニーズ調査サイトのログイン情報（⚙画面でコピーできるように表示する）
+ *   公開される index.html には書かず、ここ（Apps Script）にだけ置く。
+ *   変更するときは、ここを書き換えるか、「設定」シートに NEEDS_ID / NEEDS_PW の行を足す（シートが優先）。
+ */
+const NEEDS_LOGIN = { id: 'teruya@sustainable-transition.or.jp', pw: 'Ast201201' };
 const WORK_TEMPLATE = '業務報告書テンプレート';
 const WORK_ROWS = 22;          // テンプレートの明細行数（14〜35行目）
 const WORK_FIRST_ROW = 14;
 const WORK_PRINT_RANGE = 'B1:AD46';
 const WORK_HEADER = ['ID', '対象月', '名前', '日付', '作業時間(h)', '作業詳細', '登録日時'];
 const FARE_HEADER = ['対象月', '名前', '往復運賃(円)', '日数', '更新日時'];
-const PROFILE_HEADER = ['氏名（報告書）', 'フリガナ', '日中連絡先', '業務内容'];
+const PROFILE_HEADER = ['名前', '氏名（報告書）', 'フリガナ', '日中連絡先', '業務内容', '更新日時'];
 
 /*
- * ▼ スプシとアプリを別アカウントに分けるときだけ設定（同じスプシに入れて使うなら空のまま）
- *   SPREADSHEET_ID : データを置くスプシの ID（URL の /d/ と /edit の間の文字列）
- *   PDF_FOLDER_ID  : 活動実績PDFを保存するフォルダの ID（URL の /folders/ の後ろ）。空ならマイドライブに自動作成
+ * ▼ データを置くスプレッドシート（URL の /d/ と /edit の間の文字列）
+ *   SPREADSHEET_ID     : 基本（設定・メンバー・月設定・投票）
+ *   PATROL_SS_ID       : AST業務報告（月ごとのパトロール記録・活動実績）
+ *   WORK_SS_ID         : 業務報告関連・パトロール以外（業務報告・交通費・報告者情報・テンプレート）
+ *   MASTER_DATA_SS_ID  : パトロールマスタデータ（パトロールで見つけた新しい投稿・ユーザーを「入力」タブから追記）
+ *   PDF_FOLDER_ID      : PDF・Excel の保存先フォルダ（URL の /folders/ の後ろ）
+ *   PATROL_SS_ID / WORK_SS_ID を空にすると、基本のスプレッドシートに入ります。
  */
 const SPREADSHEET_ID = '1WMhp1ptPfDuiCkg7nSzGRGI-hBLNrbzhwA8Awx9kVug';
+const PATROL_SS_ID = '1znHFJb-ftirbCYkCNBUFCN2JTJm4qmHqp8Ss0tRvgSY';
+const WORK_SS_ID = '1BT-KMa5jbGzW66be5IFA0BmNWkew2zyyPSinPVv_wGI';
+const MASTER_DATA_SS_ID = '1SEAkV7cwFemPQ7YEuVwcGY-chcHBAOPLbKFLG_bqGRY';
 const PDF_FOLDER_ID = '1i3ZEu6zPNJPULVLLi0nckY6T4cKqPhOt';
+
+/*
+ * ▼ パトロールマスタデータの各シート
+ *   4行目が見出し、5行目からデータ。列は B:項番 C:No. D:名前 E:投稿者（ユーザーは B:項番 C:名前）
+ *   dateCol / staffCol / reportCol : 日付・担当者・報告の有無を書き込む列（列記号）
+ *   reportText : 報告の有無に入れる文字（赤字）
+ */
+const MASTER_KINDS = [
+  { key: 'project',  sheet: 'プロジェクト',     label: 'プロジェクト',     nameLabel: 'プロジェクト名',   user: false, dateCol: 'FE', staffCol: 'FF', reportCol: 'FG', reportText: '新規投稿確認' },
+  { key: 'activity', sheet: 'アクティビティ',   label: 'アクティビティ',   nameLabel: 'アクティビティ名', user: false, dateCol: 'EL', staffCol: 'EM', reportCol: 'EN', reportText: '新規投稿確認' },
+  { key: 'needs',    sheet: 'ニーズ',           label: 'ニーズ',           nameLabel: 'ニーズ名',         user: false, dateCol: 'EK', staffCol: 'EL', reportCol: 'EM', reportText: '新規投稿確認' },
+  { key: 'seeds',    sheet: 'シーズ',           label: 'シーズ',           nameLabel: 'シーズ名',         user: false, dateCol: 'EQ', staffCol: 'ER', reportCol: 'ES', reportText: '新規投稿確認' },
+  { key: 'userP',    sheet: 'ユーザー（個人）', label: 'ユーザー（個人）', nameLabel: 'ユーザー名',       user: true,  dateCol: 'CS', staffCol: 'CT', reportCol: 'CU', reportText: '新規確認' },
+  { key: 'userO',    sheet: 'ユーザー（組織）', label: 'ユーザー（組織）', nameLabel: 'ユーザー名',       user: true,  dateCol: 'CW', staffCol: 'CX', reportCol: 'CY', reportText: '新規確認' },
+];
+const MASTER_FIRST_ROW = 5;
 const TZ = 'Asia/Tokyo';
 const WORK_HOURS = 0.25;
 const MARKS = ['〇', '△', '×'];
@@ -69,6 +100,7 @@ const API_ = {
   generateShift, saveShift, setShiftStatus, reportDone, cancelReport, setManager,
   exportReport, testNotify,
   saveProfile, addWork, deleteWork, saveFare, exportWorkReport,
+  getMasterToday, addMaster, undoMaster,
 };
 
 function doPost(e) {
@@ -121,12 +153,10 @@ function onOpen() {
 function setup() {
   const ss = ss_();
   const defs = [
-    [SH.MEMBERS, ['名前', '有効', 'SlackメンバーID', '登録日時', '導入前の累計回数'].concat(PROFILE_HEADER)],
+    [SH.MEMBERS, ['名前', '有効', 'SlackメンバーID', '登録日時', '導入前の累計回数']],
     [SH.MONTHS, ['対象月', '締切日', 'シフト状態', '更新日時']],
     [SH.VOTES, ['対象月', '名前', '更新日時'].concat(range_(31).map(i => String(i + 1)))],
     [SH.SETTINGS, ['項目', '値', '説明']],
-    [SH.WORK, WORK_HEADER],
-    [SH.FARE, FARE_HEADER],
   ];
   defs.forEach(([name, header]) => {
     let s = ss.getSheetByName(name);
@@ -161,8 +191,78 @@ function setup() {
     const s = ss.getSheetByName(n);
     if (s && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s);
   });
+  // 業務報告関連のシート（別ファイル）
+  ensureSheet_(SH.WORK, WORK_HEADER);
+  ensureSheet_(SH.FARE, FARE_HEADER);
+  ensureSheet_(SH.PROFILE, PROFILE_HEADER);
   migrateLegacy_();
   toast_('初期設定が完了しました');
+}
+
+/**
+ * 【1回だけ実行】基本のスプレッドシートにあるデータを、分割先のファイルへ移す（v1.8）
+ *   ・○○_パトロール／実績_○○ → AST業務報告（PATROL_SS_ID）
+ *   ・業務報告／業務報告_交通費／業務報告書テンプレート → 業務報告関連（WORK_SS_ID）
+ *   ・メンバーシートF〜I列（氏名・フリガナ・連絡先・業務内容）→ 業務報告関連の「報告者情報」
+ * 元のシートは消さずに「旧_」を付けて残します（確認後に手で削除してください）。
+ * 何度実行しても、移行済みのものは飛ばします。
+ */
+function migrateToSplit() {
+  const main = ss_();
+  const log = [];
+  const move = (sheet, target) => {
+    const name = sheet.getName();
+    if (target.getId() === main.getId()) return;
+    const exist = target.getSheetByName(name);
+    if (exist) {
+      if (exist.getLastRow() <= 1) target.deleteSheet(exist);   // setup で作った空のシートは置き換える
+      else { log.push(`飛ばしました（移行先にすでにデータあり）：${name}`); return; }
+    }
+    const copy = sheet.copyTo(target);
+    copy.setName(name);
+    sheet.setName('旧_' + name);
+    log.push(`移しました：${name} → ${target.getName()}`);
+  };
+  const workNames = [SH.WORK, SH.FARE, WORK_TEMPLATE];
+  main.getSheets().forEach(sheet => {
+    const n = sheet.getName();
+    if (PATROL_RE.test(n) || /^実績_\d{4}-\d{2}$/.test(n)) move(sheet, ssPatrol_());
+    else if (workNames.indexOf(n) >= 0) move(sheet, ssWork_());
+  });
+  dirty_();
+
+  // 報告者情報（メンバーシートF〜I列）
+  const ms = sh_(SH.MEMBERS);
+  const last = ms.getLastRow();
+  if (last >= 2 && ms.getLastColumn() >= 6) {
+    const rows = ms.getRange(2, 1, last - 1, 9).getDisplayValues();
+    const ps = ensureSheet_(SH.PROFILE, PROFILE_HEADER);
+    const have = new Set(readRowsOpt_(SH.PROFILE).map(r => r[0].trim()));
+    let n = 0;
+    rows.forEach(r => {
+      const name = String(r[0]).trim();
+      if (!name || have.has(name) || !r.slice(5, 9).some(v => String(v).trim())) return;
+      appendRow_(ps, [name, r[5], r[6], r[7], r[8], now_()]);
+      n++;
+    });
+    if (n) {
+      ms.getRange(1, 6, last, 4).clearContent();   // 個人情報を基本のスプレッドシートから消す
+      log.push(`報告者情報を移しました：${n}人（メンバーシートのF〜I列は空にしました）`);
+    }
+  }
+
+  // 新しいファイルの空の「シート1」を片付ける
+  [ssPatrol_(), ssWork_()].forEach(t => {
+    ['シート1', 'Sheet1'].forEach(n => {
+      const x = t.getSheetByName(n);
+      if (x && x.getLastRow() === 0 && t.getSheets().length > 1) t.deleteSheet(x);
+    });
+  });
+  dirty_();
+  setup();
+  const msg = log.length ? log.join('\n') : '移すものはありませんでした';
+  console.log(msg);
+  return msg;
 }
 
 /** 旧バージョンの「シフト」「完了報告」シートがあれば、月ごとのシートへ移す */
@@ -237,6 +337,8 @@ function getAppData() {
     manager: st.MANAGER_NAME || '',
     allowance: Number(st.MANAGER_ALLOWANCE_H || 3),
     version: APP_VERSION,
+    needs: { id: st.NEEDS_ID || NEEDS_LOGIN.id, pw: st.NEEDS_PW || NEEDS_LOGIN.pw },
+    masterKinds: MASTER_KINDS.map(k => ({ key: k.key, label: k.label, nameLabel: k.nameLabel, user: k.user })),
   };
 }
 
@@ -450,7 +552,7 @@ function reportSummary_(ym) {
 function exportReport(ym) {
   assertYm_(ym);
   return withLock_(() => {
-    const ss = ss_();
+    const ss = ssPatrol_();
     const sum = reportSummary_(ym);
     const mNum = Number(ym.slice(5));
 
@@ -516,16 +618,14 @@ function exportReport(ym) {
 
 function saveProfile(name, p) {
   p = p || {};
+  if (!members_(true).some(m => m.name === name)) throw new Error('メンバーが見つかりません');
   return withLock_(() => {
-    const s = sh_(SH.MEMBERS);
-    const i = readRows_(SH.MEMBERS).findIndex(r => r[0].trim() === name);
-    if (i < 0) throw new Error('メンバーが見つかりません');
-    dirty_();
-    s.getRange(1, 6, 1, 4).setValues([PROFILE_HEADER]).setFontWeight('bold').setBackground('#e8eef5');
-    s.getRange(i + 2, 6, 1, 4).setNumberFormat('@').setValues([[
-      String(p.fullName || '').trim(), String(p.kana || '').trim(),
-      String(p.tel || '').trim(), String(p.duty || '').trim(),
-    ]]);
+    const s = ensureSheet_(SH.PROFILE, PROFILE_HEADER);
+    const i = readRowsOpt_(SH.PROFILE).findIndex(r => r[0].trim() === name);
+    const vals = [name, String(p.fullName || '').trim(), String(p.kana || '').trim(),
+      String(p.tel || '').trim(), String(p.duty || '').trim(), now_()];
+    if (i >= 0) writeRow_(s, i + 2, vals);
+    else appendRow_(s, vals);
     return getAppData();
   });
 }
@@ -580,10 +680,10 @@ function saveFare(ym, name, fare, days) {
 function exportWorkReport(ym, name) {
   assertYm_(ym);
   return withLock_(() => {
-    const ss = ss_();
+    const ss = ssWork_();
     const tpl = ss.getSheetByName(WORK_TEMPLATE);
     if (!tpl) {
-      throw new Error(`スプレッドシートに「${WORK_TEMPLATE}」シートがありません。` +
+      throw new Error(`業務報告関連のスプレッドシートに「${WORK_TEMPLATE}」シートがありません。` +
         'セットアップ手順の「業務報告書テンプレートの取り込み」を行ってください。');
     }
     const m = members_(true).find(x => x.name === name);
@@ -690,6 +790,136 @@ function subFolder_(name) {
   const parent = folder_();
   const it = parent.getFoldersByName(name);
   return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+
+/* ---------- パトロールマスタデータ（入力タブ） ---------- */
+
+/** 列記号（A, Z, AA, FE …）→ 列番号 */
+function colNum_(letters) {
+  return String(letters).toUpperCase().split('').reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0);
+}
+
+function masterKind_(key) {
+  const k = MASTER_KINDS.filter(x => x.key === key)[0];
+  if (!k) throw new Error('種類を選んでください');
+  return k;
+}
+
+function masterSheet_(k) {
+  if (!MASTER_DATA_SS_ID) throw new Error('Code.gs の MASTER_DATA_SS_ID が設定されていません');
+  const s = openSs_(MASTER_DATA_SS_ID).getSheetByName(k.sheet);
+  if (!s) throw new Error(`パトロールマスタデータに「${k.sheet}」シートがありません`);
+  return s;
+}
+
+/** 今日サイトから入力したもの（取り消し用。日付が変わると空になる） */
+function masterLog_() {
+  let o = null;
+  try { o = JSON.parse(PropertiesService.getScriptProperties().getProperty('MASTER_TODAY') || 'null'); } catch (e) { o = null; }
+  if (!o || o.date !== today_()) o = { date: today_(), items: [] };
+  return o;
+}
+function saveMasterLog_(o) {
+  PropertiesService.getScriptProperties().setProperty('MASTER_TODAY', JSON.stringify(o));
+}
+
+function getMasterToday() {
+  return masterLog_().items.map(it => Object.assign({ label: masterKind_(it.kind).label }, it));
+}
+
+/** 1件追加：最後に埋まっている行のすぐ下へ */
+function addMaster(kindKey, no, name, poster, date, staff) {
+  const k = masterKind_(kindKey);
+  no = String(no == null ? '' : no).trim().replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  name = String(name || '').trim();
+  poster = String(poster || '').trim();
+  if (!name) throw new Error(k.nameLabel + 'を入力してください');
+  date = String(date || today_());
+  if (!isDate_(date)) throw new Error('日付を選んでください');
+  staff = String(staff || '').trim();
+  if (!staff || !members_(true).some(m => m.name === staff)) throw new Error('担当者を選んでください');
+  if (!k.user) {
+    if (!/^\d+$/.test(no)) throw new Error('No. は数字で入力してください');
+    if (!poster) throw new Error('投稿者を入力してください');
+  }
+  return withLock_(() => {
+    const s = masterSheet_(k);
+    const width = k.user ? 2 : 4;                         // B:C または B:E
+    const last = Math.max(s.getLastRow(), MASTER_FIRST_ROW - 1);
+    const rows = last >= MASTER_FIRST_ROW
+      ? s.getRange(MASTER_FIRST_ROW, 2, last - MASTER_FIRST_ROW + 1, width).getDisplayValues() : [];
+    const nameIdx = k.user ? 1 : 2;
+
+    if (!k.user && rows.some(r => String(r[1]).trim() === no)) {
+      throw new Error(`No.${no} は【${k.label}】に登録済みです`);
+    }
+    let lastFilled = -1;
+    rows.forEach((r, i) => { if (String(r[nameIdx]).trim()) lastFilled = i; });
+    const idx = lastFilled + 1;                           // rows 内の位置
+    const row = MASTER_FIRST_ROW + idx;
+
+    // 項番：すでに振ってあればそのまま、なければ直前の項番＋1
+    const pre = rows[idx] ? String(rows[idx][0]).trim() : '';
+    let seq = pre;
+    let wroteSeq = false;
+    if (!seq) {
+      const prev = lastFilled >= 0 ? Number(String(rows[lastFilled][0]).replace(/[^\d]/g, '')) : 0;
+      seq = String((prev || 0) + 1);
+      wroteSeq = true;
+      if (row > MASTER_FIRST_ROW) {                        // 罫線などの書式を上の行からコピー
+        s.getRange(row - 1, 2, 1, width).copyFormatToRange(s, 2, 1 + width, row, row);
+        s.getRange(row, 2, 1, width).setBackground(null);
+      }
+    }
+    const vals = k.user ? [[Number(seq), name]] : [[Number(seq), Number(no), name, poster]];
+    s.getRange(row, 2, 1, width).setValues(vals);
+
+    // 日付・担当者・報告の有無
+    const dc = colNum_(k.dateCol), sc = colNum_(k.staffCol), rc = colNum_(k.reportCol);
+    if (wroteSeq && row > MASTER_FIRST_ROW) {
+      [dc, sc, rc].forEach(c => {
+        s.getRange(row - 1, c).copyFormatToRange(s, c, c, row, row);
+        s.getRange(row, c).setBackground(null);
+      });
+    }
+    const [y, mo, d] = date.split('-').map(Number);
+    // Date オブジェクトで書くと、スプレッドシート側のタイムゾーンが日本以外のとき
+    // 1日前にずれるため、文字列で書いてシートに日付として解釈させる
+    s.getRange(row, dc).setNumberFormat('yyyy/m/d').setValue(y + '/' + mo + '/' + d);
+    s.getRange(row, sc).setValue(staff);
+    s.getRange(row, rc).setValue(k.reportText).setFontColor('#ff0000');
+
+    const log = masterLog_();
+    log.items.push({ id: Utilities.getUuid().slice(0, 8), kind: k.key, row, seq, no: k.user ? '' : no, name, poster, date, staff, wroteSeq, at: now_() });
+    saveMasterLog_(log);
+    return { added: { label: k.label, seq, row }, today: getMasterToday() };
+  });
+}
+
+/** 今日入力したものの取り消し（そのシートで一番最後の行のときだけ） */
+function undoMaster(id) {
+  return withLock_(() => {
+    const log = masterLog_();
+    const it = log.items.filter(x => x.id === id)[0];
+    if (!it) throw new Error('取り消せるのは今日入力したものだけです');
+    const k = masterKind_(it.kind);
+    const s = masterSheet_(k);
+    const width = k.user ? 2 : 4;
+    const nameIdx = k.user ? 1 : 2;
+    const cur = s.getRange(it.row, 2, 1, width).getDisplayValues()[0];
+    if (String(cur[nameIdx]).trim() !== it.name) {
+      throw new Error('スプレッドシートの内容が変わっているため取り消せません。スプレッドシートで直接直してください');
+    }
+    const below = s.getLastRow() > it.row
+      ? s.getRange(it.row + 1, 2 + nameIdx, s.getLastRow() - it.row, 1).getDisplayValues().some(r => String(r[0]).trim()) : false;
+    if (below) throw new Error('この後に別の追加があるため取り消せません。スプレッドシートで直接直してください');
+    if (it.wroteSeq) s.getRange(it.row, 2, 1, width).clearContent();
+    else s.getRange(it.row, 3, 1, width - 1).clearContent();   // 振ってあった項番は残す
+    [k.dateCol, k.staffCol, k.reportCol].forEach(c => s.getRange(it.row, colNum_(c)).clearContent());
+    log.items = log.items.filter(x => x.id !== id);
+    saveMasterLog_(log);
+    return getMasterToday();
+  });
 }
 
 /* ---------- 通知テスト ---------- */
@@ -917,12 +1147,24 @@ function members_(includeInactive) {
       active: String(r[1]).toUpperCase() !== 'FALSE',
       slackId: (r[2] || '').trim(),
       baseCount: Number(r[4]) || 0,
-      fullName: (r[5] || '').trim(),
+      fullName: (r[5] || '').trim(),   // 旧バージョン（メンバーシートF〜I列）からの引き継ぎ用
       kana: (r[6] || '').trim(),
       tel: (r[7] || '').trim(),
       duty: r[8] || '',
     }))
+    .map(m => {
+      const p = profiles_()[m.name];
+      return p ? Object.assign(m, p) : m;
+    })
     .filter(m => includeInactive || m.active);
+}
+
+function profiles_() {
+  const o = {};
+  readRowsOpt_(SH.PROFILE).forEach(r => {
+    if (r[0].trim()) o[r[0].trim()] = { fullName: r[1].trim(), kana: r[2].trim(), tel: r[3].trim(), duty: r[4] };
+  });
+  return o;
 }
 
 function monthSetting_(ym) {
@@ -958,7 +1200,7 @@ function patrolName_(ym) { return ym + PATROL_SUFFIX; }
 function patrolRows_(ym) { return db_().patrol[ym] || []; }
 
 function ensureMonthSheet_(ym) {
-  const ss = ss_();
+  const ss = ssPatrol_();
   let s = ss.getSheetByName(patrolName_(ym));
   if (s) return s;
   const dates = datesOf_(ym);
@@ -1147,9 +1389,27 @@ function ss_() {
   return SS_;
 }
 
+const OPENED_ = {};
+function openSs_(id) {
+  if (!id) return ss_();
+  if (!OPENED_[id]) OPENED_[id] = SpreadsheetApp.openById(id);
+  return OPENED_[id];
+}
+/** AST業務報告（パトロール記録・活動実績） */
+function ssPatrol_() { return openSs_(PATROL_SS_ID); }
+/** 業務報告関連（パトロール以外） */
+function ssWork_() { return openSs_(WORK_SS_ID); }
+
+const WORK_SHEETS_ = ['WORK', 'FARE', 'PROFILE'];
+/** シート名から、それが入っているスプレッドシートを返す */
+function ssFor_(name) {
+  if (WORK_SHEETS_.some(k => SH[k] === name)) return ssWork_();
+  return ss_();
+}
+
 function sh_(name) {
-  const s = ss_().getSheetByName(name);
-  if (!s) throw new Error(`シート「${name}」がありません。メニュー「パトロール > ① 初期設定」を実行してください。`);
+  const s = ssFor_(name).getSheetByName(name);
+  if (!s) throw new Error(`シート「${name}」がありません。Apps Script で setup を実行してください。`);
   return s;
 }
 
@@ -1163,30 +1423,36 @@ const WIDTH_ = 34;
 
 function db_() {
   if (DB_) return DB_;
-  const ss = ss_();
-  const existing = ss.getSheets().map(x => x.getName());
-  const base = Object.keys(SH).map(k => SH[k]).filter(n => existing.indexOf(n) >= 0);
-  const months = existing.filter(n => PATROL_RE.test(n));
-  const names = base.concat(months);
-  let data = null;
-  try {
-    if (typeof Sheets !== 'undefined' && names.length) {
-      SpreadsheetApp.flush();
-      const res = Sheets.Spreadsheets.Values.batchGet(ss.getId(), {
-        ranges: names.map(n => `'${n}'!A2:AH`),
-      });
-      data = res.valueRanges.map(v => (v.values || []).map(pad_));
-    }
-  } catch (e) {
-    console.warn('batchGet に失敗したので通常の読み込みに切り替えます: ' + e.message);
-    data = null;
-  }
-  if (!data) data = names.map(readRowsDirect_);
   DB_ = { patrol: {} };
-  names.forEach((n, i) => {
-    const m = n.match(PATROL_RE);
-    if (m) DB_.patrol[m[1]] = data[i];
-    else DB_[n] = data[i];
+  const mainNames = Object.keys(SH).filter(k => WORK_SHEETS_.indexOf(k) < 0).map(k => SH[k]);
+  const workNames = WORK_SHEETS_.map(k => SH[k]);
+  const groups = [
+    { ss: ss_(), pick: n => mainNames.indexOf(n) >= 0 || (!PATROL_SS_ID && PATROL_RE.test(n)) || (!WORK_SS_ID && workNames.indexOf(n) >= 0) },
+  ];
+  if (PATROL_SS_ID) groups.push({ ss: ssPatrol_(), pick: n => PATROL_RE.test(n) });
+  if (WORK_SS_ID) groups.push({ ss: ssWork_(), pick: n => workNames.indexOf(n) >= 0 });
+  let flushed = false;
+  groups.forEach(g => {
+    const sheets = g.ss.getSheets().filter(x => g.pick(x.getName()));
+    const names = sheets.map(x => x.getName());
+    if (!names.length) return;
+    let data = null;
+    try {
+      if (typeof Sheets !== 'undefined') {
+        if (!flushed) { SpreadsheetApp.flush(); flushed = true; }
+        const res = Sheets.Spreadsheets.Values.batchGet(g.ss.getId(), { ranges: names.map(n => `'${n}'!A2:AH`) });
+        data = res.valueRanges.map(v => (v.values || []).map(pad_));
+      }
+    } catch (e) {
+      console.warn('batchGet に失敗したので通常の読み込みに切り替えます: ' + e.message);
+      data = null;
+    }
+    if (!data) data = sheets.map(readSheetDirect_);
+    names.forEach((n, i) => {
+      const m = n.match(PATROL_RE);
+      if (m) DB_.patrol[m[1]] = data[i];
+      else DB_[n] = data[i];
+    });
   });
   return DB_;
 }
@@ -1197,8 +1463,7 @@ function pad_(r) {
   return a;
 }
 
-function readRowsDirect_(name) {
-  const s = sh_(name);
+function readSheetDirect_(s) {
   const last = s.getLastRow();
   if (last < 2) return [];
   return s.getRange(2, 1, last - 1, s.getLastColumn()).getDisplayValues().map(pad_);
@@ -1217,7 +1482,7 @@ function readRowsOpt_(name) { return db_()[name] || []; }
 
 /** シートがなければ見出し付きで作る */
 function ensureSheet_(name, header) {
-  const ss = ss_();
+  const ss = ssFor_(name);
   let s = ss.getSheetByName(name);
   if (!s) {
     s = ss.insertSheet(name);

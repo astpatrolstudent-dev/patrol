@@ -141,6 +141,12 @@ const BACKUP_LINKS = [
   { name: 'パトロールマスタデータ', desc: 'プロジェクト・アクティビティ・ニーズ・シーズ・ユーザー（「入力」タブの追記先）', url: 'https://docs.google.com/spreadsheets/d/1SEAkV7cwFemPQ7YEuVwcGY-chcHBAOPLbKFLG_bqGRY/edit' },
 ];
 
+/* ▼ ⚙画面の「ニーズ調査」に表示するリンク（ID・PW は Code.gs の NEEDS_LOGIN から読み込む） */
+const NEEDS_LINKS = [
+  { name: 'ニーズ調査シート', desc: '調査結果をまとめるスプレッドシート', url: 'https://docs.google.com/spreadsheets/d/1M3SCoFWELWcjmHHkqzAO01PnFZJnaOMhbx12YBdsJGU/edit?gid=581196026#gid=581196026' },
+  { name: 'ニーズ調査のHP', desc: 'future-city.go.jp/platform（下の ID・PW でログイン）', url: 'https://future-city.go.jp/platform/' },
+];
+
 const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
 const IS_DEMO = !IS_GAS && !API_URL;
 const S = { app: null, me: '', tab: 'today', ym: {}, cache: {}, edit: null, vote: null, exp: null, workName: '', wDraft: {}, wexp: null, mKind: 'project', mToday: null, mDraft: {} };
@@ -571,6 +577,24 @@ function vMember() {
       <p class="muted">開けるのは、それぞれのスプレッドシートを共有されている人だけです。</p></div>`;
   }
 
+  if (NEEDS_LINKS.length) {
+    const nd = S.app.needs;
+    const cred = (label, key, val, secret) => `<div class="item">
+      <span class="muted" style="width:2.5em">${label}</span>
+      <span class="grow" style="word-break:break-all">${secret && !S.showPw ? '••••••••' : esc(val)}</span>
+      ${secret ? `<button class="btn small" data-act="pwshow">${S.showPw ? '隠す' : '表示'}</button>` : ''}
+      <button class="btn small primary" data-act="copy" data-k="${key}">コピー</button></div>`;
+    h += `<div class="card"><h2>ニーズ調査</h2><div class="links">` + NEEDS_LINKS.map(l => `
+      <a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">
+        <span><span class="ttl">${esc(l.name)}</span><br><span class="muted">${esc(l.desc)}</span></span>
+        <span class="go">↗</span></a>`).join('') + `</div>` +
+      (nd && (nd.id || nd.pw)
+        ? `<div class="list mt">${cred('ID', 'id', nd.id, false)}${cred('PW', 'pw', nd.pw, true)}</div>
+           <p class="muted">HPのログインに使います。メンバー以外には教えないでください。</p>`
+        : `<p class="muted">ID・PW は、Code.gs を更新して新バージョンでデプロイすると表示されます。</p>`) +
+      `</div>`;
+  }
+
   h += `<div class="card"><h2>管理者（名目）</h2>
     <div class="row">${memberSelect('id="mgrSel"', S.app.manager, 'なし')}<span class="muted">活動実績で手当 ${S.app.allowance}時間が付きます</span></div></div>`;
 
@@ -588,6 +612,19 @@ function vMember() {
  * ========================================================= */
 const ACT = {
   tab(b) { S.tab = b.dataset.tab; render(); },
+  pwshow() { S.showPw = !S.showPw; render(); },
+  copy(b) {
+    const v = (S.app.needs || {})[b.dataset.k] || '';
+    const done = () => toast((b.dataset.k === 'pw' ? 'PW' : 'ID') + ' をコピーしました');
+    const fallback = () => {
+      const t = document.createElement('textarea'); t.value = v; t.setAttribute('readonly', '');
+      t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select();
+      try { document.execCommand('copy'); done(); } catch (e) { toast('コピーできませんでした'); }
+      t.remove();
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(v).then(done, fallback);
+    else fallback();
+  },
   mon(b) {
     const k = b.dataset.k, dlt = Number(b.dataset.d);
     S.ym[k] = addM(S.ym[k], dlt); S.exp = null; S.wexp = null;
@@ -902,7 +939,7 @@ const Mock = !IS_DEMO ? null : (() => {
   dates(thisM).forEach((d, i) => { if (d < today && i % 9 !== 4) db.reports[d] = { name: db.shifts[d] || '佐藤', at: d + ' 21:30' }; });
   active().slice(0, 6).forEach(n => { db.votes[nextM + '|' + n] = randVote(days(nextM)); });
 
-  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: false }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', masterKinds: MASTER_DEMO });
+  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: false }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', needs: { id: 'demo@example.com', pw: 'demo-password' }, masterKinds: MASTER_DEMO });
   return {
     getAppData: app,
     getBootstrap() { const a = app(); a.months = {}; [-1, 0, 1].forEach(k => { const ym = addM(thisM, k); a.months[ym] = data(ym); }); return a; },
