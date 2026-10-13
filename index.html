@@ -466,8 +466,8 @@ async function vWork() {
   h += `<div class="card"><details ${m.fullName ? '' : 'open'}><summary><b>報告者情報</b>
       <span class="muted">${m.fullName ? esc(m.fullName) : '未入力（最初に入力してください）'}</span></summary>
     <div class="form mt">
-      <label>氏名</label><input id="pfName" value="${esc(m.fullName || '')}" placeholder="亀田 智大">
-      <label>フリガナ</label><input id="pfKana" value="${esc(m.kana || '')}" placeholder="カメダ トモヒロ">
+      <label>氏名</label><input id="pfName" value="${esc(m.fullName || '')}" placeholder="例：慶應 太郎">
+      <label>フリガナ</label><input id="pfKana" value="${esc(m.kana || '')}" placeholder="例：ケイオウ タロウ">
       <label>日中連絡先</label><input id="pfTel" value="${esc(m.tel || '')}" placeholder="080-0000-0000" inputmode="tel">
       <label>業務内容</label><textarea id="pfDuty" rows="2" placeholder="空欄ならテンプレートの文言のまま">${esc(m.duty || '')}</textarea>
     </div>
