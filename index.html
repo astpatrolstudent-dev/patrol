@@ -128,7 +128,11 @@ const LINKS = [
 ];
 
 /* ▼ 「メンバー」タブに表示するバックアップ（データの入ったスプレッドシート） */
-const BACKUP_LINK = { name: 'パトロールのスプレッドシート', desc: 'すべてのデータの保存先。サイトが使えないときはここを直接確認', url: 'https://docs.google.com/spreadsheets/d/1WMhp1ptPfDuiCkg7nSzGRGI-hBLNrbzhwA8Awx9kVug/edit?gid=1302097505#gid=1302097505' };
+const BACKUP_LINKS = [
+  { name: '基本（設定・メンバー・投票）', desc: 'メンバー・月設定・投票・設定', url: 'https://docs.google.com/spreadsheets/d/1WMhp1ptPfDuiCkg7nSzGRGI-hBLNrbzhwA8Awx9kVug/edit' },
+  { name: 'AST業務報告', desc: '月ごとのパトロール記録（担当・実施者）と活動実績', url: 'https://docs.google.com/spreadsheets/d/1znHFJb-ftirbCYkCNBUFCN2JTJm4qmHqp8Ss0tRvgSY/edit' },
+  { name: '業務報告関連（パトロール以外）', desc: '業務報告・交通費・報告者情報・報告書テンプレート', url: 'https://docs.google.com/spreadsheets/d/1BT-KMa5jbGzW66be5IFA0BmNWkew2zyyPSinPVv_wGI/edit' },
+];
 
 const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
 const IS_DEMO = !IS_GAS && !API_URL;
@@ -517,12 +521,12 @@ function vMember() {
   <div class="row mt"><input id="newMember" placeholder="名前を追加"><button class="btn primary" data-act="madd">追加</button></div>
   <p class="muted">休止にした人はシフト・投票の対象から外れます（過去の実績は残ります）。</p></div>`;
 
-  if (BACKUP_LINK && BACKUP_LINK.url) {
-    h += `<div class="card"><h2>バックアップ</h2><div class="links">
-      <a class="link" href="${esc(BACKUP_LINK.url)}" target="_blank" rel="noopener">
-        <span><span class="ttl">${esc(BACKUP_LINK.name)}</span><br><span class="muted">${esc(BACKUP_LINK.desc)}</span></span>
-        <span class="go">↗</span></a></div>
-      <p class="muted">開けるのは、スプレッドシートを共有されている人だけです。</p></div>`;
+  if (BACKUP_LINKS.length) {
+    h += `<div class="card"><h2>バックアップ</h2><div class="links">` + BACKUP_LINKS.map(l => `
+      <a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">
+        <span><span class="ttl">${esc(l.name)}</span><br><span class="muted">${esc(l.desc)}</span></span>
+        <span class="go">↗</span></a>`).join('') + `</div>
+      <p class="muted">開けるのは、それぞれのスプレッドシートを共有されている人だけです。</p></div>`;
   }
 
   h += `<div class="card"><h2>管理者（名目）</h2>
