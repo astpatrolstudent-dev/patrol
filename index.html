@@ -532,7 +532,9 @@ async function vInput() {
   let h = `<div class="card"><h2>データ入力（パトロールマスタデータ）</h2>
     <p class="muted">パトロールで見つけた新しい投稿・ユーザーを追加します。なければ何もしなくてOKです。</p>
     <div class="kinds">${kinds.map(x => `<button class="btn small ${x.key === k.key ? 'on' : ''}" data-act="mkind" data-k="${x.key}">${esc(x.label)}</button>`).join('')}</div>
-    <div class="form mt">` +
+    <div class="form mt">
+      <label>日付</label><input type="date" id="mDate" value="${esc(d.date || S.app.today)}">
+      <label>担当者</label>${memberSelect('id="mStaff"', d.staff || S.me, '選択')}` +
     (k.user ? '' : `<label>No.</label><input id="mNo" inputmode="numeric" placeholder="例：1198" value="${esc(d.no || '')}">`) +
     `<label>${esc(k.nameLabel)}</label><input id="mName" value="${esc(d.name || '')}">` +
     (k.user ? '' : `<label>投稿者</label><input id="mPoster" value="${esc(d.poster || '')}">`) +
@@ -542,7 +544,7 @@ async function vInput() {
   h += `<div class="card"><h2>今日入力したもの（${items.length}件）</h2>`;
   h += items.length ? '<div class="list">' + items.slice().reverse().map(it => `<div class="item">
       <span class="badge b-info">${esc(it.label)}</span>
-      <span class="grow">${it.no ? `<span class="muted">No.${esc(it.no)}</span> ` : ''}${esc(it.name)}${it.poster ? `<br><span class="muted">${esc(it.poster)}</span>` : ''}</span>
+      <span class="grow">${it.no ? `<span class="muted">No.${esc(it.no)}</span> ` : ''}${esc(it.name)}${it.poster ? `<br><span class="muted">${esc(it.poster)}</span>` : ''}${it.staff ? `<br><span class="muted">${esc(md(it.date))}・${esc(it.staff)}</span>` : ''}</span>
       <button class="btn small" data-act="mundo" data-id="${esc(it.id)}">取り消し</button></div>`).join('') + '</div>'
     : '<p class="muted">まだありません。</p>';
   h += '<p class="muted">取り消せるのは、今日入力したもので、そのシートの一番下にあるものだけです。それ以外はスプレッドシートで直接直してください。</p></div>';
@@ -674,10 +676,12 @@ const ACT = {
     const no = $('#mNo') ? $('#mNo').value.trim() : '';
     const name = $('#mName').value.trim();
     const poster = $('#mPoster') ? $('#mPoster').value.trim() : '';
-    S.mDraft = { no, name, poster };
-    const r = await run(() => api('addMaster', S.mKind, no, name, poster));
+    const date = $('#mDate').value, staff = $('#mStaff').value;
+    S.mDraft = { no, name, poster, date, staff };
+    if (!staff) return toast('担当者を選んでください');
+    const r = await run(() => api('addMaster', S.mKind, no, name, poster, date, staff));
     if (r) {
-      S.mToday = r.today; S.mDraft = {};
+      S.mToday = r.today; S.mDraft = { date, staff };
       toast(`【${r.added.label}】に追加しました（項番 ${r.added.seq}）`);
       render();
     }
@@ -946,14 +950,14 @@ const Mock = !IS_DEMO ? null : (() => {
     saveFare(ym, name, fare, days) { db.fares[ym + '|' + name] = { fare: fare === '' ? '' : Number(fare), days: days === '' ? '' : Number(days) }; return data(ym); },
     exportWorkReport() { return { demo: true }; },
     getMasterToday() { return db.master.map(x => Object.assign({}, x)); },
-    addMaster(kind, no, name, poster) {
+    addMaster(kind, no, name, poster, date, staff) {
       const k = MASTER_DEMO.find(x => x.key === kind);
       if (!name) throw new Error(k.nameLabel + 'を入力してください');
       if (!k.user && !/^\d+$/.test(no)) throw new Error('No. は数字で入力してください');
       if (!k.user && !poster) throw new Error('投稿者を入力してください');
       if (!k.user && db.master.some(x => x.kind === kind && x.no === no)) throw new Error(`No.${no} は【${k.label}】に登録済みです`);
       const seq = String(455 + db.master.length);
-      db.master.push({ id: Math.random().toString(36).slice(2, 10), kind, label: k.label, no: k.user ? '' : no, name, poster: k.user ? '' : poster, seq });
+      db.master.push({ id: Math.random().toString(36).slice(2, 10), kind, label: k.label, no: k.user ? '' : no, name, poster: k.user ? '' : poster, seq, date, staff });
       return { added: { label: k.label, seq }, today: db.master.map(x => Object.assign({}, x)) };
     },
     undoMaster(id) { db.master = db.master.filter(x => x.id !== id); return db.master.map(x => Object.assign({}, x)); },
