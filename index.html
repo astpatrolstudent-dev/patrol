@@ -26,6 +26,10 @@ header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px 
 .demo{background:var(--warn-weak);color:var(--warn);text-align:center;font-size:12px;padding:4px 16px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 16px 4px;max-width:760px;margin:0 auto}
 .top h1{font-size:16px;margin:0;white-space:nowrap}
+.gear{font-size:16px;line-height:1;padding:6px 9px}
+.gear.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.kinds{display:flex;flex-wrap:wrap;gap:6px}
+.kinds .btn.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
 .me{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)}
 nav{display:flex;max-width:760px;margin:0 auto}
 nav button{flex:1;border:0;background:none;padding:10px 4px;font:inherit;font-size:14px;color:var(--sub);border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}
@@ -97,15 +101,18 @@ textarea{font:inherit;padding:7px 8px;border:1px solid var(--line);border-radius
   <div class="demo" id="demo" hidden>デモ表示です（ダミーデータ・保存されません）。Apps Script にデプロイすると本番データで動きます。</div>
   <div class="top">
     <h1>パトロールシフト</h1>
-    <label class="me">あなた <select id="meSel"></select></label>
+    <div class="row" style="gap:6px;flex-wrap:nowrap">
+      <label class="me">あなた <select id="meSel"></select></label>
+      <button class="btn small gear" data-act="tab" data-tab="member" title="メンバー・設定">⚙</button>
+    </div>
   </div>
   <nav>
     <button data-act="tab" data-tab="today" class="on">今日</button>
+    <button data-act="tab" data-tab="input">入力</button>
     <button data-act="tab" data-tab="shift">シフト</button>
     <button data-act="tab" data-tab="vote">投票</button>
     <button data-act="tab" data-tab="report">実績</button>
     <button data-act="tab" data-tab="work">業務報告</button>
-    <button data-act="tab" data-tab="member">メンバー</button>
   </nav>
 </header>
 <main id="view"></main>
@@ -124,7 +131,6 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbwlrLlE35McokuwBRGVTUqs
 /* ▼ 「各種URL」に表示するリンク（名前・説明・URL）。増やす・変えるときはここを書き換える */
 const LINKS = [
   { name: 'platform clover', desc: 'パトロールするサイト', url: 'https://platform-clover.net/' },
-  { name: 'パトロール内容の報告先', desc: 'パトロールした内容を記入する Excel（OneDrive）', url: 'https://onedrive.live.com/:x:/g/personal/d70aea05e0cd23a5/UQClI83gBeoKIIDXuUYAAAAAALbBWOQXpO9OyWs?rtime=5iss2Nwo30g&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3gvcyFBcVVqemVBRjZnclhnWTA1dHNGWTVCZWs3MDdKYXc_ZT1jdWQzSmc' },
 ];
 
 /* ▼ 「メンバー」タブに表示するバックアップ（データの入ったスプレッドシート） */
@@ -132,11 +138,12 @@ const BACKUP_LINKS = [
   { name: '基本（設定・メンバー・投票）', desc: 'メンバー・月設定・投票・設定', url: 'https://docs.google.com/spreadsheets/d/1WMhp1ptPfDuiCkg7nSzGRGI-hBLNrbzhwA8Awx9kVug/edit' },
   { name: 'AST業務報告', desc: '月ごとのパトロール記録（担当・実施者）と活動実績', url: 'https://docs.google.com/spreadsheets/d/1znHFJb-ftirbCYkCNBUFCN2JTJm4qmHqp8Ss0tRvgSY/edit' },
   { name: '業務報告関連（パトロール以外）', desc: '業務報告・交通費・報告者情報・報告書テンプレート', url: 'https://docs.google.com/spreadsheets/d/1BT-KMa5jbGzW66be5IFA0BmNWkew2zyyPSinPVv_wGI/edit' },
+  { name: 'パトロールマスタデータ', desc: 'プロジェクト・アクティビティ・ニーズ・シーズ・ユーザー（「入力」タブの追記先）', url: 'https://docs.google.com/spreadsheets/d/1XFL1JudFVCZLobyy8tIIGJlmQWk5pKPuinAJxEej_HI/edit' },
 ];
 
 const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
 const IS_DEMO = !IS_GAS && !API_URL;
-const S = { app: null, me: '', tab: 'today', ym: {}, cache: {}, edit: null, vote: null, exp: null, workName: '', wDraft: {}, wexp: null };
+const S = { app: null, me: '', tab: 'today', ym: {}, cache: {}, edit: null, vote: null, exp: null, workName: '', wDraft: {}, wexp: null, mKind: 'project', mToday: null, mDraft: {} };
 
 async function api(fn, ...args) {
   if (!IS_GAS && API_URL) {
@@ -234,8 +241,8 @@ function monthNav(key, ym) {
  * 画面
  * ========================================================= */
 async function render() {
-  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
-  const views = { today: vToday, shift: vShift, vote: vVote, report: vReport, work: vWork, member: vMember };
+  document.querySelectorAll('nav button, .gear').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
+  const views = { today: vToday, input: vInput, shift: vShift, vote: vVote, report: vReport, work: vWork, member: vMember };
   busy(true);
   try { $('#view').innerHTML = await views[S.tab](); }
   catch (e) { $('#view').innerHTML = errorCard(e); }
@@ -279,6 +286,9 @@ async function vToday() {
   }
   h += '</div>';
   h += linksCard();
+  h += `<div class="card row between"><span>今日のデータ入力 <b>${S.mToday ? S.mToday.length : '…'}</b>件</span>
+    <button class="btn small" data-act="tab" data-tab="input">入力する</button></div>`;
+  if (!S.mToday) loadMasterToday();
 
   // 報告がない日（今月の過去日＋月初1週間は前月分も）
   let pend = d.dates.filter(x => x < t && !d.reports[x]).map(x => [x, d]);
@@ -510,6 +520,36 @@ async function vWork() {
   return h + '</div>';
 }
 
+/* ---------- データ入力（パトロールマスタデータ） ---------- */
+function loadMasterToday() {
+  api('getMasterToday').then(r => { S.mToday = r; if (S.tab === 'today' || S.tab === 'input') render(); }).catch(() => {});
+}
+async function vInput() {
+  if (!S.mToday) S.mToday = await api('getMasterToday');
+  const kinds = S.app.masterKinds || [];
+  const k = kinds.find(x => x.key === S.mKind) || kinds[0];
+  const d = S.mDraft;
+  let h = `<div class="card"><h2>データ入力（パトロールマスタデータ）</h2>
+    <p class="muted">パトロールで見つけた新しい投稿・ユーザーを追加します。なければ何もしなくてOKです。</p>
+    <div class="kinds">${kinds.map(x => `<button class="btn small ${x.key === k.key ? 'on' : ''}" data-act="mkind" data-k="${x.key}">${esc(x.label)}</button>`).join('')}</div>
+    <div class="form mt">` +
+    (k.user ? '' : `<label>No.</label><input id="mNo" inputmode="numeric" placeholder="例：1198" value="${esc(d.no || '')}">`) +
+    `<label>${esc(k.nameLabel)}</label><input id="mName" value="${esc(d.name || '')}">` +
+    (k.user ? '' : `<label>投稿者</label><input id="mPoster" value="${esc(d.poster || '')}">`) +
+    `</div><button class="btn primary mt" style="width:100%" data-act="madd2">【${esc(k.label)}】に追加</button></div>`;
+
+  const items = S.mToday || [];
+  h += `<div class="card"><h2>今日入力したもの（${items.length}件）</h2>`;
+  h += items.length ? '<div class="list">' + items.slice().reverse().map(it => `<div class="item">
+      <span class="badge b-info">${esc(it.label)}</span>
+      <span class="grow">${it.no ? `<span class="muted">No.${esc(it.no)}</span> ` : ''}${esc(it.name)}${it.poster ? `<br><span class="muted">${esc(it.poster)}</span>` : ''}</span>
+      <button class="btn small" data-act="mundo" data-id="${esc(it.id)}">取り消し</button></div>`).join('') + '</div>'
+    : '<p class="muted">まだありません。</p>';
+  h += '<p class="muted">取り消せるのは、今日入力したもので、そのシートの一番下にあるものだけです。それ以外はスプレッドシートで直接直してください。</p></div>';
+  h += linksCard();
+  return h;
+}
+
 /* ---------- メンバー ---------- */
 function vMember() {
   const ms = S.app.members;
@@ -522,7 +562,7 @@ function vMember() {
   <p class="muted">休止にした人はシフト・投票の対象から外れます（過去の実績は残ります）。</p></div>`;
 
   if (BACKUP_LINKS.length) {
-    h += `<div class="card"><h2>バックアップ</h2><div class="links">` + BACKUP_LINKS.map(l => `
+    h += `<div class="card"><h2>各種シート</h2><div class="links">` + BACKUP_LINKS.map(l => `
       <a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">
         <span><span class="ttl">${esc(l.name)}</span><br><span class="muted">${esc(l.desc)}</span></span>
         <span class="go">↗</span></a>`).join('') + `</div>
@@ -628,6 +668,24 @@ const ACT = {
     const ym = S.ym.report;
     const r = await run(() => api('exportReport', ym));
     if (r) { S.exp = Object.assign({ ym }, r); render(); if (!r.demo) ACT.dlpdf(); }
+  },
+  mkind(b) { S.mKind = b.dataset.k; render(); },
+  async madd2() {
+    const no = $('#mNo') ? $('#mNo').value.trim() : '';
+    const name = $('#mName').value.trim();
+    const poster = $('#mPoster') ? $('#mPoster').value.trim() : '';
+    S.mDraft = { no, name, poster };
+    const r = await run(() => api('addMaster', S.mKind, no, name, poster));
+    if (r) {
+      S.mToday = r.today; S.mDraft = {};
+      toast(`【${r.added.label}】に追加しました（項番 ${r.added.seq}）`);
+      render();
+    }
+  },
+  async mundo(b) {
+    if (!confirm('この入力を取り消しますか？（スプレッドシートからも消えます）')) return;
+    const r = await run(() => api('undoMaster', b.dataset.id));
+    if (r) { S.mToday = r; toast('取り消しました'); render(); }
   },
   async pfsave() {
     const p = { fullName: $('#pfName').value, kana: $('#pfKana').value, tel: $('#pfTel').value, duty: $('#pfDuty').value };
@@ -775,6 +833,14 @@ function buildShift(n, names, avail, prevLast, iterations) {
   return best;
 }
 
+const MASTER_DEMO = [
+  { key: 'project', label: 'プロジェクト', nameLabel: 'プロジェクト名', user: false },
+  { key: 'activity', label: 'アクティビティ', nameLabel: 'アクティビティ名', user: false },
+  { key: 'needs', label: 'ニーズ', nameLabel: 'ニーズ名', user: false },
+  { key: 'seeds', label: 'シーズ', nameLabel: 'シーズ名', user: false },
+  { key: 'userP', label: 'ユーザー（個人）', nameLabel: 'ユーザー名', user: true },
+  { key: 'userO', label: 'ユーザー（組織）', nameLabel: 'ユーザー名', user: true },
+];
 const Mock = !IS_DEMO ? null : (() => {
   const now = new Date();
   const today = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
@@ -785,7 +851,7 @@ const Mock = !IS_DEMO ? null : (() => {
   const db = {
     members: ['佐藤', '鈴木', '高橋', '田中', '伊藤', '渡辺', '山本', '中村'].map((n, i) => ({ name: n, active: true, slackId: '', baseCount: [120, 98, 76, 54, 40, 22, 10, 0][i] })),
     manager: '高橋',
-    months: {}, votes: {}, shifts: {}, reports: {}, work: [], fares: {},
+    months: {}, votes: {}, shifts: {}, reports: {}, work: [], fares: {}, master: [],
   };
   const active = () => db.members.filter(m => m.active).map(m => m.name);
   const setting = ym => db.months[ym] || { deadline: '', status: '未作成' };
@@ -832,7 +898,7 @@ const Mock = !IS_DEMO ? null : (() => {
   dates(thisM).forEach((d, i) => { if (d < today && i % 9 !== 4) db.reports[d] = { name: db.shifts[d] || '佐藤', at: d + ' 21:30' }; });
   active().slice(0, 6).forEach(n => { db.votes[nextM + '|' + n] = randVote(days(nextM)); });
 
-  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: false }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ' });
+  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: false }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', masterKinds: MASTER_DEMO });
   return {
     getAppData: app,
     getBootstrap() { const a = app(); a.months = {}; [-1, 0, 1].forEach(k => { const ym = addM(thisM, k); a.months[ym] = data(ym); }); return a; },
@@ -879,6 +945,18 @@ const Mock = !IS_DEMO ? null : (() => {
     deleteWork(id) { const w = db.work.find(x => x.id === id); db.work = db.work.filter(x => x.id !== id); return data(w.date.slice(0, 7)); },
     saveFare(ym, name, fare, days) { db.fares[ym + '|' + name] = { fare: fare === '' ? '' : Number(fare), days: days === '' ? '' : Number(days) }; return data(ym); },
     exportWorkReport() { return { demo: true }; },
+    getMasterToday() { return db.master.map(x => Object.assign({}, x)); },
+    addMaster(kind, no, name, poster) {
+      const k = MASTER_DEMO.find(x => x.key === kind);
+      if (!name) throw new Error(k.nameLabel + 'を入力してください');
+      if (!k.user && !/^\d+$/.test(no)) throw new Error('No. は数字で入力してください');
+      if (!k.user && !poster) throw new Error('投稿者を入力してください');
+      if (!k.user && db.master.some(x => x.kind === kind && x.no === no)) throw new Error(`No.${no} は【${k.label}】に登録済みです`);
+      const seq = String(455 + db.master.length);
+      db.master.push({ id: Math.random().toString(36).slice(2, 10), kind, label: k.label, no: k.user ? '' : no, name, poster: k.user ? '' : poster, seq });
+      return { added: { label: k.label, seq }, today: db.master.map(x => Object.assign({}, x)) };
+    },
+    undoMaster(id) { db.master = db.master.filter(x => x.id !== id); return db.master.map(x => Object.assign({}, x)); },
   };
 })();
 
