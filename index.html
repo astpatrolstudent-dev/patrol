@@ -73,6 +73,11 @@ th{background:var(--bg);font-weight:600}
 .spin{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:r .8s linear infinite}
 @keyframes r{to{transform:rotate(360deg)}}
 a{color:var(--accent)}
+.links{display:grid;gap:8px}
+.link{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--card)}
+.link:hover{border-color:var(--accent)}
+.link .ttl{font-weight:600;color:var(--accent)}
+.link .go{margin-left:auto;color:var(--sub);font-size:18px}
 .form{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center}
 .form label{font-size:13px;color:var(--sub);white-space:nowrap}
 .form input,.form textarea{width:100%}
@@ -115,6 +120,12 @@ const WD = '日月火水木金土';
 const MARKS = ['〇', '△', '×'];
 /* ▼ GitHub Pages などに置くときは、Apps Script のウェブアプリURL（…/exec）をここに入れる */
 const API_URL = 'https://script.google.com/macros/s/AKfycbwlrLlE35McokuwBRGVTUqssW0ksalqBjNe3-qA_JAGdUH0f9XGzssa0-U654Q6Tp-X/exec';
+
+/* ▼ 「各種URL」に表示するリンク（名前・説明・URL）。増やす・変えるときはここを書き換える */
+const LINKS = [
+  { name: 'platform clover', desc: 'パトロールするサイト', url: 'https://platform-clover.net/user-page/portfolio?id=9e4a5c2a-e226-49ff-bdef-1f933f1df68a&type=organization' },
+  { name: 'パトロール内容の報告先', desc: 'パトロールした内容を記入する Excel（OneDrive）', url: 'https://onedrive.live.com/:x:/g/personal/d70aea05e0cd23a5/UQClI83gBeoKIIDXuUYAAAAAALbBWOQXpO9OyWs?rtime=5iss2Nwo30g&redeem=aHR0cHM6Ly8xZHJ2Lm1zL3gvcyFBcVVqemVBRjZnclhnWTA1dHNGWTVCZWs3MDdKYXc_ZT1jdWQzSmc' },
+];
 
 const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
 const IS_DEMO = !IS_GAS && !API_URL;
@@ -233,6 +244,15 @@ function renderMe() {
     activeNames().map(n => `<option ${n === S.me ? 'selected' : ''}>${esc(n)}</option>`).join('');
 }
 
+/* ---------- 各種URL ---------- */
+function linksCard() {
+  if (!LINKS.length) return '';
+  return `<div class="card"><h2>各種URL</h2><div class="links">` + LINKS.map(l => `
+    <a class="link" href="${esc(l.url)}" target="_blank" rel="noopener">
+      <span><span class="ttl">${esc(l.name)}</span><br><span class="muted">${esc(l.desc)}</span></span>
+      <span class="go">↗</span></a>`).join('') + '</div></div>';
+}
+
 /* ---------- 今日 ---------- */
 async function vToday() {
   const t = S.app.today;
@@ -251,6 +271,7 @@ async function vToday() {
       <button class="btn primary" data-act="report" data-date="${t}">完了報告</button></div>`;
   }
   h += '</div>';
+  h += linksCard();
 
   // 報告がない日（今月の過去日＋月初1週間は前月分も）
   let pend = d.dates.filter(x => x < t && !d.reports[x]).map(x => [x, d]);
