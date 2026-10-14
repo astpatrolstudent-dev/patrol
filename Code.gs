@@ -23,8 +23,10 @@ const SH = {
   WORK: '業務報告',
   FARE: '業務報告_交通費',
   PROFILE: '報告者情報',
+  LINE: 'LINE登録',
 };
-const APP_VERSION = '1.10';
+const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
+const APP_VERSION = '1.11';
 
 /*
  * ▼ ニーズ調査サイトのログイン情報（⚙画面でコピーできるように表示する）
@@ -98,7 +100,7 @@ function doGet() {
 const API_ = {
   getBootstrap, getMonthData, addMember, setMemberActive, saveVote, setDeadline,
   generateShift, saveShift, setShiftStatus, reportDone, cancelReport, setManager,
-  exportReport, testNotify,
+  exportReport, testNotify, setLineAdmin, lineQuota,
   saveProfile, addWork, deleteWork, saveFare, exportWorkReport,
   getMasterToday, addMaster, undoMaster,
 };
@@ -120,13 +122,9 @@ function doPost(e) {
     return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
   }
 
-  // LINE の Webhook（送信先グループIDを自動で記録するだけ）
+  // LINE の Webhook（友だち追加した人が名前を送ると、その人の LINE を登録する）
   try {
-    (body.events || []).forEach(ev => {
-      const src = ev.source || {};
-      const id = src.groupId || src.roomId;
-      if (id && !getSettings_().LINE_TO) setSetting_('LINE_TO', id);
-    });
+    (body.events || []).forEach(ev => { try { lineEvent_(ev); } catch (err) { console.error(err); } });
   } catch (err) {
     console.error(err);
   }
@@ -138,7 +136,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('パトロール')
     .addItem('① 初期設定（シート作成）', 'setup')
-    .addItem('② 22時リマインドを有効にする', 'installTriggers')
+    .addItem('② 朝8時・夜22時のお知らせを有効にする', 'installTriggers')
     .addItem('リマインドを止める', 'removeTriggers')
     .addSeparator()
     .addItem('通知テスト', 'testNotifyFromMenu')
@@ -175,7 +173,7 @@ function setup() {
   const defaults = [
     ['SLACK_WEBHOOK_URL', '', 'Slack の Incoming Webhook URL（空なら Slack には送らない）'],
     ['LINE_CHANNEL_ACCESS_TOKEN', '', 'LINE公式アカウント（Messaging API）のチャネルアクセストークン（空なら LINE には送らない）'],
-    ['LINE_TO', '', 'LINE の送信先グループID（Bot をグループに招待して誰かが発言すると自動で入る）'],
+    ['LINE_ADMIN', '', 'LINE で「完了」「シフト下書き」の連絡を受け取る管理者の名前（Webの⚙からも変更可）'],
     ['REMIND_ENABLED', 'TRUE', 'FALSE にするとリマインドを一時停止'],
     ['VOTE_REMIND_START_DAY', '20', '締切なしの月：前月のこの日から、未回答者に毎晩リマインド'],
     ['VOTE_REMIND_DAYS_BEFORE', '3', '締切ありの月：締切の何日前から毎晩リマインドするか'],
@@ -308,12 +306,15 @@ function installTriggers() {
   ScriptApp.newTrigger('dailyReminder')
     .timeBased().atHour(22).nearMinute(0).everyDays(1).inTimezone(TZ)
     .create();
-  toast_('毎日22時台のリマインドを設定しました');
+  ScriptApp.newTrigger('morningReminder')
+    .timeBased().atHour(8).nearMinute(0).everyDays(1).inTimezone(TZ)
+    .create();
+  toast_('毎朝8時ごろ・毎晩22時ごろのお知らせを設定しました');
 }
 
 function removeTriggers() {
   ScriptApp.getProjectTriggers()
-    .filter(t => t.getHandlerFunction() === 'dailyReminder')
+    .filter(t => ['dailyReminder', 'morningReminder'].indexOf(t.getHandlerFunction()) >= 0)
     .forEach(t => ScriptApp.deleteTrigger(t));
 }
 
@@ -331,7 +332,9 @@ function getAppData() {
     members: members_(true),
     notify: {
       slack: !!st.SLACK_WEBHOOK_URL,
-      line: !!(st.LINE_CHANNEL_ACCESS_TOKEN && st.LINE_TO),
+      line: !!st.LINE_CHANNEL_ACCESS_TOKEN,
+      lineUsers: Object.keys(lineUsers_()),
+      lineAdmin: st.LINE_ADMIN || '',
     },
     workHours: WORK_HOURS,
     manager: st.MANAGER_NAME || '',
@@ -479,10 +482,18 @@ function reportDone(date, name) {
   if (!isDate_(date)) throw new Error('日付が不正です');
   if (date > today_()) throw new Error('未来の日付は報告できません');
   if (!members_(true).some(m => m.name === name)) throw new Error('実施者を選んでください');
-  return withLock_(() => {
+  const res = withLock_(() => {
     writePatrol_(date, 4, [name, now_()]);
     return monthData_(monthOf_(date));
   });
+  // 完了の連絡（LINE）：担当者・実施者・管理者へ
+  try {
+    const who = shifts_(monthOf_(date))[date] || '';
+    lineSendTo_([who, name, getSettings_().LINE_ADMIN],
+      `【完了】${md_(date)} のパトロールが完了しました。\n実施：${name}さん` +
+      (who && who !== name ? `（担当：${who}さん）` : ''));
+  } catch (e) { console.error(e); }
+  return res;
 }
 
 function cancelReport(date) {
@@ -502,6 +513,32 @@ function setManager(name) {
     setSetting_('MANAGER_NAME', name);
     return getAppData();
   });
+}
+
+/* ---------- LINE 通知の設定 ---------- */
+
+function setLineAdmin(name) {
+  name = String(name || '');
+  if (name && !members_(true).some(m => m.name === name)) throw new Error('メンバーが見つかりません');
+  return withLock_(() => {
+    setSetting_('LINE_ADMIN', name);
+    return getAppData();
+  });
+}
+
+/** 今月の LINE 送信数（無料プランは月200通まで） */
+function lineQuota() {
+  const st = getSettings_();
+  if (!st.LINE_CHANNEL_ACCESS_TOKEN) throw new Error('LINE が設定されていません');
+  const get = path => {
+    const r = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/' + path, {
+      headers: { Authorization: 'Bearer ' + st.LINE_CHANNEL_ACCESS_TOKEN }, muteHttpExceptions: true,
+    });
+    if (r.getResponseCode() >= 300) throw new Error('LINE エラー：' + r.getContentText());
+    return JSON.parse(r.getContentText());
+  };
+  const q = get('quota'), c = get('quota/consumption');
+  return { used: c.totalUsage || 0, limit: q.type === 'limited' ? q.value : null };
 }
 
 /* ---------- 活動実績（スプシ＋PDF） ---------- */
@@ -924,11 +961,106 @@ function undoMaster(id) {
 
 /* ---------- 通知テスト ---------- */
 
-function testNotify() {
+function testNotify(name) {
   const r = notify_(() => '【テスト】パトロールシフトからの通知テストです');
+  if (name && getSettings_().LINE_CHANNEL_ACCESS_TOKEN) {
+    const uid = lineUsers_()[name];
+    if (!uid) r.errors.push(`${name}さんは LINE 未登録です（公式アカウントを友だち追加して名前を送ってください）`);
+    else {
+      try { linePush_(uid, `【テスト】${name}さん、パトロールシフトからの LINE 通知テストです`); r.sent.push('LINE（' + name + 'さん）'); }
+      catch (e) { r.errors.push('LINE送信エラー：' + e.message); }
+    }
+  }
   if (!r.sent.length && !r.errors.length) throw new Error('通知先が設定されていません（「設定」シートを確認してください）');
   if (r.errors.length) throw new Error(r.errors.join('\n'));
   return r.sent.join(' / ') + ' に送信しました';
+}
+
+/* ---------- LINE（Messaging API）----------
+ * 無料プランは月200通まで。グループに送ると人数分数えられるので、必要な人にだけ個別に送る。
+ * 返信（Reply）は通数に数えられないので、登録の受け付けは返信で行う。
+ */
+function lineUsers_() {
+  const o = {};
+  readRowsOpt_(SH.LINE).forEach(r => { if (r[0] && r[1]) o[r[0].trim()] = r[1].trim(); });
+  return o;
+}
+function lineApi_(path, payload) {
+  const token = getSettings_().LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token) return null;
+  const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/' + path, {
+    method: 'post', contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify(payload), muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() >= 300) throw new Error(res.getContentText());
+  return true;
+}
+function linePush_(userId, text) {
+  return lineApi_('push', { to: userId, messages: [{ type: 'text', text: String(text).slice(0, 4900) }] });
+}
+function lineReply_(token, text) {
+  return lineApi_('reply', { replyToken: token, messages: [{ type: 'text', text: String(text).slice(0, 4900) }] });
+}
+/** 名前のリストに LINE を送る（未登録・空・重複は飛ばす。エラーでも止めない） */
+function lineSendTo_(names, text) {
+  if (!getSettings_().LINE_CHANNEL_ACCESS_TOKEN) return 0;
+  const users = lineUsers_();
+  const done = {};
+  let n = 0;
+  (names || []).forEach(nm => {
+    nm = String(nm || '').trim();
+    const uid = users[nm];
+    if (!nm || !uid || done[uid]) return;
+    done[uid] = true;
+    try { linePush_(uid, text); n++; } catch (e) { console.error('LINE送信エラー（' + nm + '）：' + e.message); }
+  });
+  return n;
+}
+function lineEvent_(ev) {
+  const src = ev.source || {};
+  if (src.type !== 'user' || !src.userId) return;
+  const uid = src.userId;
+  if (ev.type === 'unfollow') { lineUnregister_(uid); return; }
+  if (ev.type === 'follow') {
+    lineReply_(ev.replyToken, '友だち追加ありがとうございます。\nパトロールのお知らせを受け取るには、サイトで使っている自分の名前（例：蔵本）を1回送ってください。');
+    return;
+  }
+  if (ev.type !== 'message' || !ev.message || ev.message.type !== 'text') return;
+  const text = String(ev.message.text || '').trim().replace(/^登録[\s　:：]*/, '').replace(/さん$/, '').replace(/\s+/g, '');
+  const registered = Object.keys(lineUsers_()).filter(n => lineUsers_()[n] === uid)[0];
+  if (text === '解除') {
+    lineUnregister_(uid);
+    lineReply_(ev.replyToken, '登録を解除しました。もう一度受け取るときは、名前を送ってください。');
+    return;
+  }
+  const m = members_(true).filter(x => x.active).find(x => x.name.replace(/\s+/g, '') === text);
+  if (m) {
+    withLock_(() => {
+      const s = ensureSheet_(SH.LINE, LINE_HEADER);
+      const rows = readRowsOpt_(SH.LINE);
+      // 同じ名前・同じ LINE の古い登録を消してから追加
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i][0].trim() === m.name || rows[i][1].trim() === uid) s.deleteRow(i + 2);
+      }
+      dirty_();
+      appendRow_(s, [m.name, uid, now_()]);
+    });
+    lineReply_(ev.replyToken, `${m.name}さんで登録しました。\n担当日の朝8時ごろと、完了報告をしたときに、ここにお知らせが届きます。\n（やめるときは「解除」と送ってください）`);
+    return;
+  }
+  if (!registered) {
+    lineReply_(ev.replyToken, '名前が見つかりませんでした。サイトの「あなた」に出てくる名前と同じように送ってください（例：蔵本）。');
+  }
+}
+function lineUnregister_(uid) {
+  withLock_(() => {
+    const s = ssFor_(SH.LINE).getSheetByName(SH.LINE);
+    if (!s) return;
+    const rows = readRowsOpt_(SH.LINE);
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i][1].trim() === uid) s.deleteRow(i + 2);
+    dirty_();
+  });
 }
 
 function testNotifyFromMenu() {
@@ -952,6 +1084,11 @@ function dailyReminder() {
       `【パトロール未報告】${md_(t)} の完了報告がまだです。\n` +
       `担当：${who ? m(who) : '（未設定）'}\n` +
       `パトロールが終わったら完了報告をお願いします。${appUrl_()}`);
+    // LINE は担当者だけに（担当がいない日は管理者へ）
+    lineSendTo_([who || st.LINE_ADMIN],
+      `${md_(t)} のパトロールの完了報告がまだです。\n` +
+      (who ? `担当：${who}さん\n` : '担当者：（未設定）\n') +
+      `終わっていたら、サイトで「完了報告」を押してください。${appUrl_()}`);
   }
 
   // ② 次月の担当可否投票
@@ -978,7 +1115,30 @@ function dailyReminder() {
       `未回答：${md.unanswered.map(m).join('、')}` +
       (md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '') +
       `\n回答をお願いします。${appUrl_()}`);
+    // LINE は未回答の人それぞれに。通数を抑えるため、締切ありは3日前・前日・当日、締切なしは3日おき
+    const day = Number(t.slice(8)), start = Number(st.VOTE_REMIND_START_DAY || 20);
+    const lineDay = md.setting.deadline
+      ? [3, 1, 0].indexOf(daysBetween_(t, md.setting.deadline)) >= 0
+      : (day - start) % 3 === 0;
+    if (lineDay) md.unanswered.forEach(n => lineSendTo_([n],
+      `${n}さん、${ymLabel_(nx)}の担当可否の投票がまだです。` +
+      (md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '') +
+      `\nサイトの「投票」タブから回答をお願いします。${appUrl_()}`));
   }
+}
+
+/** 毎朝8時ごろ：今日の担当者に LINE でお知らせ */
+function morningReminder() {
+  const st = getSettings_();
+  if (String(st.REMIND_ENABLED || 'TRUE').toUpperCase() === 'FALSE') return;
+  const t = today_();
+  const ym = monthOf_(t);
+  if (monthData_(ym).setting.status !== STATUS.FIXED) return; // シフト確定前は送らない
+  const who = shifts_(ym)[t];
+  if (!who || reports_(ym)[t]) return;
+  lineSendTo_([who],
+    `${who}さん、おはようございます。\n今日 ${md_(t)} のパトロール担当です。よろしくお願いします。\n` +
+    `終わったら、サイトで「完了報告」を押してください。${appUrl_()}`);
 }
 
 /* =========================================================
@@ -1008,6 +1168,10 @@ function generate_(ym) {
     `【${ymLabel_(ym)}のシフト】下書きを自動作成しました。` +
     (blanks ? `\n⚠ 担当者がいない日が${blanks}日あります。` : '') +
     `\n確認・調整して「確定」をお願いします。${appUrl_()}`);
+  lineSendTo_([getSettings_().LINE_ADMIN],
+    `【${ymLabel_(ym)}のシフト】下書きができました。` +
+    (blanks ? `\n⚠ 担当者がいない日が${blanks}日あります。` : '') +
+    `\n確認して「確定」をお願いします。${appUrl_()}`);
 }
 
 /**
@@ -1319,24 +1483,6 @@ function notify_(build) {
     }
   }
 
-  if (st.LINE_CHANNEL_ACCESS_TOKEN && st.LINE_TO) {
-    try {
-      const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { Authorization: 'Bearer ' + st.LINE_CHANNEL_ACCESS_TOKEN },
-        payload: JSON.stringify({
-          to: st.LINE_TO,
-          messages: [{ type: 'text', text: build(mention_('line')).slice(0, 4900) }],
-        }),
-        muteHttpExceptions: true,
-      });
-      if (res.getResponseCode() >= 300) throw new Error(res.getContentText());
-      sent.push('LINE');
-    } catch (e) {
-      errors.push('LINE送信エラー：' + e.message);
-    }
-  }
   return { sent, errors };
 }
 

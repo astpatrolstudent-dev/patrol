@@ -599,10 +599,21 @@ function vMember() {
     <div class="row">${memberSelect('id="mgrSel"', S.app.manager, 'なし')}<span class="muted">活動実績で手当 ${S.app.allowance}時間が付きます</span></div></div>`;
 
   const n = S.app.notify;
-  h += `<div class="card"><h2>通知（毎日22時台）</h2>
-    <div class="chips"><span class="chip">Slack：${n.slack ? '設定済み' : '未設定'}</span><span class="chip">LINE：${n.line ? '設定済み' : '未設定'}</span></div>
-    <p class="muted">送信先はスプレッドシートの「設定」シートで変更します。</p>
-    <button class="btn" data-act="testNotify">テスト送信</button></div>
+  const lu = n.lineUsers || [];
+  h += `<div class="card"><h2>LINE通知</h2>` + (n.line ? `
+    <p class="muted">LINE登録（公式アカウントを友だち追加して、自分の名前を送ると登録されます）</p>
+    <div class="chips">${activeNames().map(nm => `<span class="badge ${lu.indexOf(nm) >= 0 ? 'b-ok' : 'b-info'}">${lu.indexOf(nm) >= 0 ? '✓' : '未'} ${esc(nm)}</span>`).join('')}</div>
+    <div class="row mt"><span class="muted">完了の連絡先（管理者）</span>${memberSelect('id="lineAdminSel"', n.lineAdmin, 'なし')}</div>
+    <div class="list mt">
+      <div class="item"><span class="muted" style="width:5.5em">朝8時ごろ</span><span class="grow">その日の担当者へ「パトロールお願いします」</span></div>
+      <div class="item"><span class="muted" style="width:5.5em">完了報告時</span><span class="grow">担当者・実施者・管理者へ「完了しました」</span></div>
+      <div class="item"><span class="muted" style="width:5.5em">夜22時ごろ</span><span class="grow">未報告なら担当者へ／投票の未回答者へ</span></div>
+    </div>
+    <div class="row mt"><button class="btn" data-act="testNotify">自分にテスト送信</button><button class="btn" data-act="lineQuota">今月の送信数</button></div>
+    <p class="muted">無料プランは月200通まで。ひとりに1回送ると1通です。</p>`
+    : `<p class="muted">未設定です。「設定」シートの LINE_CHANNEL_ACCESS_TOKEN にトークンを入れると使えます。</p>`) +
+    (n.slack ? `<p class="muted">Slack：設定済み</p><button class="btn" data-act="testNotify">テスト送信</button>` : '') + `</div>`;
+  h += `
     <p class="muted" style="text-align:center">バージョン ${esc(S.app.version || '?')}</p>`;
   return h;
 }
@@ -786,8 +797,13 @@ const ACT = {
     if (r) { S.app = r; S.cache = {}; prefetch(S.app.thisMonth); prefetch(S.app.nextMonth); S.edit = null; renderMe(); render(); }
   },
   async testNotify() {
-    const r = await run(() => api('testNotify'));
+    if (!S.me) { toast('右上の「あなた」で自分の名前を選んでください'); return; }
+    const r = await run(() => api('testNotify', S.me));
     if (r) toast(r);
+  },
+  async lineQuota() {
+    const r = await run(() => api('lineQuota'));
+    if (r) toast(`今月の送信数：${r.used}${r.limit ? ' / ' + r.limit : ''}通`);
   },
 };
 
@@ -799,6 +815,9 @@ document.addEventListener('change', e => {
   const t = e.target;
   if (t.id === 'meSel') { S.me = t.value; S.workName = ''; lsSet('patrol_me', S.me); if (S.vote && !S.vote.dirty) S.vote = null; render(); }
   else if (t.id === 'workName') { S.workName = t.value; S.wexp = null; render(); }
+  else if (t.id === 'lineAdminSel') {
+    run(() => api('setLineAdmin', t.value)).then(r => { if (r) { S.app = r; toast('完了の連絡先を変更しました'); render(); } });
+  }
   else if (t.id === 'mgrSel') {
     run(() => api('setManager', t.value)).then(r => { if (r) { S.app = r; toast('管理者を変更しました'); render(); } });
   }
@@ -939,7 +958,7 @@ const Mock = !IS_DEMO ? null : (() => {
   dates(thisM).forEach((d, i) => { if (d < today && i % 9 !== 4) db.reports[d] = { name: db.shifts[d] || '佐藤', at: d + ' 21:30' }; });
   active().slice(0, 6).forEach(n => { db.votes[nextM + '|' + n] = randVote(days(nextM)); });
 
-  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: false }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', needs: { id: 'demo@example.com', pw: 'demo-password' }, masterKinds: MASTER_DEMO });
+  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: true, lineUsers: ['今井', '蔵本', '中井'], lineAdmin: db.manager }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', needs: { id: 'demo@example.com', pw: 'demo-password' }, masterKinds: MASTER_DEMO });
   return {
     getAppData: app,
     getBootstrap() { const a = app(); a.months = {}; [-1, 0, 1].forEach(k => { const ym = addM(thisM, k); a.months[ym] = data(ym); }); return a; },
@@ -978,6 +997,8 @@ const Mock = !IS_DEMO ? null : (() => {
         missing: ds.filter(d => !db.reports[d] && d <= today) };
     },
     testNotify() { throw new Error('デモでは通知は送られません'); },
+    setLineAdmin(name) { db.lineAdmin = name; const a = app(); a.notify.lineAdmin = name; return a; },
+    lineQuota() { return { used: 12, limit: 200 }; },
     saveProfile(name, p) { Object.assign(db.members.find(x => x.name === name), p); return app(); },
     addWork(name, date, hours, detail) {
       if (db.work.filter(w => w.name === name && w.date.slice(0, 7) === date.slice(0, 7)).length >= 22) throw new Error('業務報告書1枚に書けるのは22行までです');
