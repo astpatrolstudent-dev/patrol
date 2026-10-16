@@ -26,7 +26,7 @@ const SH = {
   LINE: 'LINE登録',
 };
 const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
-const APP_VERSION = '1.11';
+const APP_VERSION = '1.12';
 
 /*
  * ▼ ニーズ調査サイトのログイン情報（⚙画面でコピーできるように表示する）
@@ -102,7 +102,7 @@ const API_ = {
   generateShift, saveShift, setShiftStatus, reportDone, cancelReport, setManager,
   exportReport, testNotify, setLineAdmin, lineQuota,
   saveProfile, addWork, deleteWork, saveFare, exportWorkReport,
-  getMasterToday, addMaster, undoMaster,
+  getMasterToday, getMasterLatest, addMaster, undoMaster,
 };
 
 function doPost(e) {
@@ -858,6 +858,55 @@ function masterLog_() {
 }
 function saveMasterLog_(o) {
   PropertiesService.getScriptProperties().setProperty('MASTER_TODAY', JSON.stringify(o));
+}
+
+/** 種類ごとに、シートの一番下（最新）の記録を返す（二重入力の防止用） */
+function getMasterLatest() {
+  if (!MASTER_DATA_SS_ID) throw new Error('Code.gs の MASTER_DATA_SS_ID が設定されていません');
+  const ss = openSs_(MASTER_DATA_SS_ID);
+  const kinds = MASTER_KINDS.filter(k => ss.getSheetByName(k.sheet));
+  const ranges = [];
+  kinds.forEach(k => {
+    ranges.push(`'${k.sheet}'!B${MASTER_FIRST_ROW}:${k.user ? 'C' : 'E'}`);
+    ranges.push(`'${k.sheet}'!${k.dateCol}${MASTER_FIRST_ROW}:${k.staffCol}`);
+  });
+  let data = null;
+  try {
+    if (typeof Sheets !== 'undefined' && ranges.length) {
+      const res = Sheets.Spreadsheets.Values.batchGet(ss.getId(), { ranges });
+      data = res.valueRanges.map(v => v.values || []);
+    }
+  } catch (e) {
+    console.warn('batchGet に失敗したので通常の読み込みに切り替えます: ' + e.message);
+  }
+  if (!data) {
+    data = [];
+    kinds.forEach(k => {
+      const s = ss.getSheetByName(k.sheet);
+      const n = Math.max(s.getLastRow() - MASTER_FIRST_ROW + 1, 0);
+      data.push(n ? s.getRange(MASTER_FIRST_ROW, 2, n, k.user ? 2 : 4).getDisplayValues() : []);
+      data.push(n ? s.getRange(MASTER_FIRST_ROW, colNum_(k.dateCol), n, 2).getDisplayValues() : []);
+    });
+  }
+  const out = {};
+  kinds.forEach((k, i) => {
+    const main = data[i * 2], ds = data[i * 2 + 1];
+    const nameIdx = k.user ? 1 : 2;
+    let last = -1;
+    main.forEach((r, j) => { if (String(r[nameIdx] || '').trim()) last = j; });
+    if (last < 0) { out[k.key] = null; return; }
+    const r = main[last], d = ds[last] || [];
+    out[k.key] = {
+      row: MASTER_FIRST_ROW + last,
+      seq: String(r[0] || '').trim(),
+      no: k.user ? '' : String(r[1] || '').trim(),
+      name: String(r[nameIdx] || '').trim(),
+      poster: k.user ? '' : String(r[3] || '').trim(),
+      date: String(d[0] || '').trim(),
+      staff: String(d[1] || '').trim(),
+    };
+  });
+  return out;
 }
 
 function getMasterToday() {

@@ -78,6 +78,8 @@ th{background:var(--bg);font-weight:600}
 @keyframes r{to{transform:rotate(360deg)}}
 a{color:var(--accent)}
 .links{display:grid;gap:8px}
+.latest{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.5}
+.latest-h{font-size:12px;color:var(--sub);font-weight:600;margin-bottom:2px}
 .link{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;text-decoration:none;color:var(--text);background:var(--card)}
 .link:hover{border-color:var(--accent)}
 .link .ttl{font-weight:600;color:var(--accent)}
@@ -535,13 +537,16 @@ async function vInput() {
   const kinds = S.app.masterKinds || [];
   const k = kinds.find(x => x.key === S.mKind) || kinds[0];
   const d = S.mDraft;
+  if (S.mLatest === undefined) loadMasterLatest();
+  const lt = S.mLatest && S.mLatest[k.key];
   let h = `<div class="card"><h2>データ入力（パトロールマスタデータ）</h2>
     <p class="muted">パトロールで見つけた新しい投稿・ユーザーを追加します。なければ何もしなくてOKです。</p>
     <div class="kinds">${kinds.map(x => `<button class="btn small ${x.key === k.key ? 'on' : ''}" data-act="mkind" data-k="${x.key}">${esc(x.label)}</button>`).join('')}</div>
+    ${latestBox(k)}
     <div class="form mt">
       <label>日付</label><input type="date" id="mDate" value="${esc(d.date || S.app.today)}">
       <label>担当者</label>${memberSelect('id="mStaff"', d.staff || S.me, '選択')}` +
-    (k.user ? '' : `<label>No.</label><input id="mNo" inputmode="numeric" placeholder="例：1198" value="${esc(d.no || '')}">`) +
+    (k.user ? '' : `<label>No.</label><input id="mNo" inputmode="numeric" placeholder="${lt && lt.no ? '最新は No.' + esc(lt.no) : '例：1198'}" value="${esc(d.no || '')}">`) +
     `<label>${esc(k.nameLabel)}</label><input id="mName" value="${esc(d.name || '')}">` +
     (k.user ? '' : `<label>投稿者</label><input id="mPoster" value="${esc(d.poster || '')}">`) +
     `</div><button class="btn primary mt" style="width:100%" data-act="madd2">【${esc(k.label)}】に追加</button></div>`;
@@ -556,6 +561,26 @@ async function vInput() {
   h += '<p class="muted">取り消せるのは、今日入力したもので、そのシートの一番下にあるものだけです。それ以外はスプレッドシートで直接直してください。</p></div>';
   h += linksCard();
   return h;
+}
+
+/* シートの一番下（最新）の記録。二重入力を防ぐために表示する */
+function loadMasterLatest() {
+  S.mLatest = null;   // 読み込み中
+  api('getMasterLatest').then(r => { S.mLatest = r || {}; if (S.tab === 'input') render(); })
+    .catch(() => { S.mLatest = false; if (S.tab === 'input') render(); });
+}
+function latestBox(k) {
+  const L = S.mLatest;
+  let body;
+  if (L === null || L === undefined) body = '<span class="muted">読み込み中…</span>';
+  else if (L === false) body = '<span class="muted">読み込めませんでした（スプレッドシートで確認してください）</span>';
+  else if (!L[k.key]) body = '<span class="muted">まだ記録がありません</span>';
+  else {
+    const x = L[k.key];
+    body = `<div><span class="muted">項番${esc(x.seq)}${x.no ? '・' : ''}</span>${x.no ? `<b>No.${esc(x.no)}</b> ` : ''}<b>${esc(x.name)}</b></div>` +
+      `<div class="muted">${x.poster ? esc(x.poster) + '／' : ''}${esc(x.date || '日付なし')}${x.staff ? '・' + esc(x.staff) : ''}</div>`;
+  }
+  return `<div class="latest mt"><div class="latest-h">【${esc(k.label)}】の最新の記録（シートの一番下）</div>${body}</div>`;
 }
 
 /* ---------- メンバー ---------- */
@@ -622,7 +647,7 @@ function vMember() {
  * 操作
  * ========================================================= */
 const ACT = {
-  tab(b) { S.tab = b.dataset.tab; render(); },
+  tab(b) { S.tab = b.dataset.tab; if (S.tab === 'input') S.mLatest = undefined; render(); },
   pwshow() { S.showPw = !S.showPw; render(); },
   copy(b) {
     const v = (S.app.needs || {})[b.dataset.k] || '';
@@ -730,6 +755,10 @@ const ACT = {
     const r = await run(() => api('addMaster', S.mKind, no, name, poster, date, staff));
     if (r) {
       S.mToday = r.today; S.mDraft = { date, staff };
+      if (S.mLatest) {
+        const ymd = date.split('-').map(Number);
+        S.mLatest[S.mKind] = { seq: String(r.added.seq), no, name, poster, date: `${ymd[0]}/${ymd[1]}/${ymd[2]}`, staff };
+      }
       toast(`【${r.added.label}】に追加しました（項番 ${r.added.seq}）`);
       render();
     }
@@ -737,7 +766,7 @@ const ACT = {
   async mundo(b) {
     if (!confirm('この入力を取り消しますか？（スプレッドシートからも消えます）')) return;
     const r = await run(() => api('undoMaster', b.dataset.id));
-    if (r) { S.mToday = r; toast('取り消しました'); render(); }
+    if (r) { S.mToday = r; toast('取り消しました'); loadMasterLatest(); render(); }
   },
   async pfsave() {
     const p = { fullName: $('#pfName').value, kana: $('#pfKana').value, tel: $('#pfTel').value, duty: $('#pfDuty').value };
@@ -1008,6 +1037,11 @@ const Mock = !IS_DEMO ? null : (() => {
     saveFare(ym, name, fare, days) { db.fares[ym + '|' + name] = { fare: fare === '' ? '' : Number(fare), days: days === '' ? '' : Number(days) }; return data(ym); },
     exportWorkReport() { return { demo: true }; },
     getMasterToday() { return db.master.map(x => Object.assign({}, x)); },
+    getMasterLatest() {
+      const o = { project: { seq: '1197', no: '1197', name: '地域の防災マップづくり', poster: '豊田市', date: '2026/10/15', staff: activeNames()[0] || '' }, userO: { seq: '342', no: '', name: '株式会社サンプル', poster: '', date: '2026/10/14', staff: activeNames()[1] || '' } };
+      db.master.forEach(x => { o[x.kind] = { seq: String(x.seq), no: x.no, name: x.name, poster: x.poster, date: x.date.replace(/-0?/g, '/'), staff: x.staff }; });
+      return o;
+    },
     addMaster(kind, no, name, poster, date, staff) {
       const k = MASTER_DEMO.find(x => x.key === kind);
       if (!name) throw new Error(k.nameLabel + 'を入力してください');
