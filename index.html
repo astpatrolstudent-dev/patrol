@@ -74,6 +74,8 @@ th{background:var(--bg);font-weight:600}
 #toast.show{opacity:1}
 #busy{position:fixed;inset:0;display:none;z-index:15;align-items:center;justify-content:center;background:rgba(0,0,0,.08)}
 #busy.show{display:flex}
+#sync{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:14;background:var(--card);color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.08);display:none}
+#sync.show{display:block}
 .spin{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:r .8s linear infinite}
 @keyframes r{to{transform:rotate(360deg)}}
 a{color:var(--accent)}
@@ -120,6 +122,7 @@ textarea{font:inherit;padding:7px 8px;border:1px solid var(--line);border-radius
 <main id="view"></main>
 <div id="toast"></div>
 <div id="busy"><div class="spin"></div></div>
+<div id="sync"></div>
 
 <script>
 /* =========================================================
@@ -229,7 +232,51 @@ async function month(ym, force) {
   if (force || !S.cache[ym]) S.cache[ym] = await api('getMonthData', ym);
   return S.cache[ym];
 }
-function put(d) { if (d && d.ym) S.cache[d.ym] = d; return d; }
+function put(d) { if (d && d.ym) { S.cache[d.ym] = d; saveBoot(); } return d; }
+
+/* ---------- 前回の内容を端末に保存して、開いた瞬間に表示する ----------
+ * サーバー（Apps Script）の応答は数秒かかるので、まず前回の内容を出し、裏で最新に差し替える */
+const BOOT_KEY = 'patrol_boot_v1';
+let bootTimer;
+function saveBoot() {
+  if (IS_DEMO || !S.app) return;
+  clearTimeout(bootTimer);
+  bootTimer = setTimeout(() => {
+    const t = S.app.thisMonth, months = {};
+    [addM(t, -1), t, addM(t, 1)].forEach(ym => { if (S.cache[ym]) months[ym] = S.cache[ym]; });
+    const app = Object.assign({}, S.app); delete app.needs;   // ID・PW は端末に残さない
+    lsSet(BOOT_KEY, JSON.stringify({ at: Date.now(), app, months, mLatest: S.mLatest || null }));
+  }, 300);
+}
+function loadBoot() {
+  if (IS_DEMO) return null;
+  try { const o = JSON.parse(lsGet(BOOT_KEY) || 'null'); return o && o.app && o.app.members ? o : null; } catch (e) { return null; }
+}
+function syncPill(text) {
+  const el = $('#sync');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('show', !!text);
+}
+/** 裏で届いたデータで描き直す。入力中の文字やカーソル位置は消さない */
+function softRender() {
+  const view = $('#view');
+  const vals = {};
+  view.querySelectorAll('input[id],select[id],textarea[id]').forEach(el => { vals[el.id] = el.type === 'checkbox' ? el.checked : el.value; });
+  const act = document.activeElement && view.contains(document.activeElement) ? document.activeElement : null;
+  const focusId = act && act.id, sel = act && 'selectionStart' in act ? [act.selectionStart, act.selectionEnd] : null;
+  return render().then(() => {
+    Object.keys(vals).forEach(id => {
+      const el = document.getElementById(id);
+      if (!el || el.type === 'file') return;
+      if (el.type === 'checkbox') el.checked = vals[id]; else if (el.value !== vals[id]) el.value = vals[id];
+    });
+    if (focusId) {
+      const el = document.getElementById(focusId);
+      if (el) { el.focus(); try { if (sel) el.setSelectionRange(sel[0], sel[1]); } catch (e) {} }
+    }
+  });
+}
 
 function activeNames() { return S.app.members.filter(m => m.active).map(m => m.name); }
 function memberSelect(attrs, selected, emptyLabel) {
@@ -296,7 +343,7 @@ async function vToday() {
   h += linksCard();
   h += `<div class="card row between"><span>今日のデータ入力 <b>${S.mToday ? S.mToday.length : '…'}</b>件</span>
     <button class="btn small" data-act="tab" data-tab="input">入力する</button></div>`;
-  if (!S.mToday) loadMasterToday();
+  if (!S.mToday && !S.mLoading) loadMasterInfo();
 
   // 報告がない日（今月の過去日＋月初1週間は前月分も）
   let pend = d.dates.filter(x => x < t && !d.reports[x]).map(x => [x, d]);
@@ -529,15 +576,25 @@ async function vWork() {
 }
 
 /* ---------- データ入力（パトロールマスタデータ） ---------- */
-function loadMasterToday() {
-  api('getMasterToday').then(r => { S.mToday = r; if (S.tab === 'today' || S.tab === 'input') render(); }).catch(() => {});
+/* 入力タブの「今日入力したもの」と「最新の記録」を1回の通信でまとめて取る（表示は待たせない） */
+function loadMasterInfo() {
+  if (S.mLoading) return;
+  S.mLoading = true;
+  const done = () => { S.mLoading = false; if (S.tab === 'today' || S.tab === 'input') softRender(); };
+  api('getMasterInfo')
+    .then(r => { S.mToday = r.today || []; S.mLatest = r.latest == null ? false : r.latest; saveBoot(); done(); })
+    .catch(() => {
+      // 古い Code.gs（getMasterInfo がない）でも動くように
+      Promise.all([api('getMasterToday'), api('getMasterLatest').catch(() => false)])
+        .then(([t, l]) => { S.mToday = t; S.mLatest = l; done(); })
+        .catch(() => { if (S.mLatest == null) S.mLatest = false; done(); });
+    });
 }
 async function vInput() {
-  if (!S.mToday) S.mToday = await api('getMasterToday');
+  if (!S.mToday && !S.mLoading) loadMasterInfo();
   const kinds = S.app.masterKinds || [];
   const k = kinds.find(x => x.key === S.mKind) || kinds[0];
   const d = S.mDraft;
-  if (S.mLatest === undefined) loadMasterLatest();
   const lt = S.mLatest && S.mLatest[k.key];
   let h = `<div class="card"><h2>データ入力（パトロールマスタデータ）</h2>
     <p class="muted">パトロールで見つけた新しい投稿・ユーザーを追加します。なければ何もしなくてOKです。</p>
@@ -552,7 +609,7 @@ async function vInput() {
     `</div><button class="btn primary mt" style="width:100%" data-act="madd2">【${esc(k.label)}】に追加</button></div>`;
 
   const items = S.mToday || [];
-  h += `<div class="card"><h2>今日入力したもの（${items.length}件）</h2>`;
+  h += `<div class="card"><h2>今日入力したもの（${S.mToday ? items.length : '…'}件）</h2>`;
   h += items.length ? '<div class="list">' + items.slice().reverse().map(it => `<div class="item">
       <span class="badge b-info">${esc(it.label)}</span>
       <span class="grow">${it.no ? `<span class="muted">No.${esc(it.no)}</span> ` : ''}${esc(it.name)}${it.poster ? `<br><span class="muted">${esc(it.poster)}</span>` : ''}${it.staff ? `<br><span class="muted">${esc(md(it.date))}・${esc(it.staff)}</span>` : ''}</span>
@@ -564,11 +621,6 @@ async function vInput() {
 }
 
 /* シートの一番下（最新）の記録。二重入力を防ぐために表示する */
-function loadMasterLatest() {
-  S.mLatest = null;   // 読み込み中
-  api('getMasterLatest').then(r => { S.mLatest = r || {}; if (S.tab === 'input') render(); })
-    .catch(() => { S.mLatest = false; if (S.tab === 'input') render(); });
-}
 function latestBox(k) {
   const L = S.mLatest;
   let body;
@@ -647,7 +699,7 @@ function vMember() {
  * 操作
  * ========================================================= */
 const ACT = {
-  tab(b) { S.tab = b.dataset.tab; if (S.tab === 'input') S.mLatest = undefined; render(); },
+  tab(b) { S.tab = b.dataset.tab; render(); if (S.tab === 'input') loadMasterInfo(); },   // 前回の内容を出しつつ裏で最新に
   pwshow() { S.showPw = !S.showPw; render(); },
   copy(b) {
     const v = (S.app.needs || {})[b.dataset.k] || '';
@@ -766,7 +818,7 @@ const ACT = {
   async mundo(b) {
     if (!confirm('この入力を取り消しますか？（スプレッドシートからも消えます）')) return;
     const r = await run(() => api('undoMaster', b.dataset.id));
-    if (r) { S.mToday = r; toast('取り消しました'); loadMasterLatest(); render(); }
+    if (r) { S.mToday = r; toast('取り消しました'); render(); loadMasterInfo(); }
   },
   async pfsave() {
     const p = { fullName: $('#pfName').value, kana: $('#pfKana').value, tel: $('#pfTel').value, duty: $('#pfDuty').value };
@@ -860,27 +912,45 @@ window.addEventListener('beforeunload', e => {
   if ((S.vote && S.vote.dirty) || (S.edit && S.edit.dirty)) { e.preventDefault(); e.returnValue = ''; }
 });
 
-async function init() {
-  if (IS_DEMO) $('#demo').hidden = false;
-  busy(true);
-  try {
-    S.app = await api('getBootstrap');
-    Object.keys(S.app.months || {}).forEach(ym => put(S.app.months[ym]));
-    delete S.app.months;
-  }
-  catch (e) { $('#view').innerHTML = errorCard(e); return; }
-  finally { busy(false); }
+function applyBoot(app) {
+  const prevToday = S.app && S.app.today;
+  S.app = app;
+  Object.keys(app.months || {}).forEach(ym => { S.cache[ym] = app.months[ym]; });
+  delete S.app.months;
   S.me = lsGet('patrol_me');
   if (activeNames().indexOf(S.me) < 0) S.me = '';
-  const day = Number(S.app.today.slice(8));
-  S.ym = {
-    shift: S.app.thisMonth,
-    vote: S.app.nextMonth,
-    report: day <= 10 ? addM(S.app.thisMonth, -1) : S.app.thisMonth,
-    work: day <= 10 ? addM(S.app.thisMonth, -1) : S.app.thisMonth,
-  };
+  if (prevToday !== S.app.today) {        // 初回、または日付が変わったときだけ表示月を合わせる
+    const day = Number(S.app.today.slice(8));
+    S.ym = {
+      shift: S.app.thisMonth,
+      vote: S.app.nextMonth,
+      report: day <= 10 ? addM(S.app.thisMonth, -1) : S.app.thisMonth,
+      work: day <= 10 ? addM(S.app.thisMonth, -1) : S.app.thisMonth,
+    };
+  }
   renderMe();
-  render();
+}
+async function init() {
+  if (IS_DEMO) $('#demo').hidden = false;
+  const saved = loadBoot();
+  if (saved) {
+    // 前回の内容ですぐ表示 → 裏で最新を取りに行く
+    applyBoot(Object.assign({}, saved.app, { months: saved.months || {} }));
+    if (saved.mLatest) S.mLatest = saved.mLatest;
+    syncPill('最新に更新中…');
+    render();
+  } else busy(true);
+  try {
+    const fresh = await api('getBootstrap');
+    applyBoot(fresh);
+    saveBoot();
+    syncPill('');
+    if (saved) softRender(); else render();
+    loadMasterInfo();   // 入力タブの情報も裏で先読み
+  } catch (e) {
+    if (saved) { syncPill(''); toast('最新の情報を取得できませんでした（前回の内容を表示しています）'); }
+    else $('#view').innerHTML = errorCard(e);
+  } finally { if (!saved) busy(false); }
 }
 
 /* =========================================================
@@ -1037,6 +1107,7 @@ const Mock = !IS_DEMO ? null : (() => {
     saveFare(ym, name, fare, days) { db.fares[ym + '|' + name] = { fare: fare === '' ? '' : Number(fare), days: days === '' ? '' : Number(days) }; return data(ym); },
     exportWorkReport() { return { demo: true }; },
     getMasterToday() { return db.master.map(x => Object.assign({}, x)); },
+    getMasterInfo() { return { today: this.getMasterToday(), latest: this.getMasterLatest() }; },
     getMasterLatest() {
       const o = { project: { seq: '1197', no: '1197', name: '地域の防災マップづくり', poster: '豊田市', date: '2026/10/15', staff: activeNames()[0] || '' }, userO: { seq: '342', no: '', name: '株式会社サンプル', poster: '', date: '2026/10/14', staff: activeNames()[1] || '' } };
       db.master.forEach(x => { o[x.kind] = { seq: String(x.seq), no: x.no, name: x.name, poster: x.poster, date: x.date.replace(/-0?/g, '/'), staff: x.staff }; });

@@ -26,7 +26,7 @@ const SH = {
   LINE: 'LINE登録',
 };
 const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
-const APP_VERSION = '1.12';
+const APP_VERSION = '1.13';
 
 /*
  * ▼ ニーズ調査サイトのログイン情報（⚙画面でコピーできるように表示する）
@@ -102,7 +102,7 @@ const API_ = {
   generateShift, saveShift, setShiftStatus, reportDone, cancelReport, setManager,
   exportReport, testNotify, setLineAdmin, lineQuota,
   saveProfile, addWork, deleteWork, saveFare, exportWorkReport,
-  getMasterToday, getMasterLatest, addMaster, undoMaster,
+  getMasterToday, getMasterLatest, getMasterInfo, addMaster, undoMaster,
 };
 
 function doPost(e) {
@@ -907,6 +907,13 @@ function getMasterLatest() {
     };
   });
   return out;
+}
+
+/** 入力タブ用：今日の入力と最新の記録を1回で返す（通信回数を減らす） */
+function getMasterInfo() {
+  let latest = null;
+  try { latest = getMasterLatest(); } catch (e) { console.warn(e.message); }
+  return { today: getMasterToday(), latest };
 }
 
 function getMasterToday() {
