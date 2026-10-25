@@ -5,6 +5,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>パトロールシフト</title>
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="パトロール">
+<meta name="application-name" content="パトロール">
+<meta name="theme-color" content="#2563eb">
 <style>
 :root{
   --bg:#f4f5f7;--card:#fff;--text:#1d2330;--sub:#6a7385;--line:#e2e5eb;
@@ -54,6 +60,7 @@ select,input{font:inherit;padding:7px 8px;border:1px solid var(--line);border-ra
 .item{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .date{width:72px;flex:none;font-variant-numeric:tabular-nums}
 .sat{color:var(--sat)}.sun{color:var(--sun)}
+.hol{flex:none;font-size:11px;color:var(--sun);border:1px solid currentColor;border-radius:999px;padding:0 6px;line-height:18px}
 .grow{flex:1;min-width:110px}
 .marks{display:flex;gap:4px}
 .mk{width:42px;height:34px;border:1px solid var(--line);background:var(--card);border-radius:8px;font:inherit;font-size:16px;cursor:pointer;color:var(--sub)}
@@ -195,7 +202,42 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&a
 const pad2 = n => String(n).padStart(2, '0');
 function wdIdx(d) { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).getDay(); }
 function md(d) { const p = d.split('-').map(Number); return `${p[1]}/${p[2]}(${WD[wdIdx(d)]})`; }
-function wdc(d) { const w = wdIdx(d); return w === 0 ? 'sun' : w === 6 ? 'sat' : ''; }
+function wdc(d) { const w = wdIdx(d); return w === 0 || holiday(d) ? 'sun' : w === 6 ? 'sat' : ''; }
+
+/* ---------- 祝日（内閣府の決まりを計算。振替休日・国民の休日も含む） ---------- */
+const HOL_CACHE = {};
+function holidaysOf(y) {
+  if (HOL_CACHE[y]) return HOL_CACHE[y];
+  const o = {};
+  const key = (m, d) => `${y}-${pad2(m)}-${pad2(d)}`;
+  const nthMon = (m, n) => { const first = new Date(y, m - 1, 1).getDay(); return 1 + ((8 - first) % 7) + (n - 1) * 7; };
+  const spring = Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
+  const autumn = Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4));
+  [[1, 1, '元日'], [1, nthMon(1, 2), '成人の日'], [2, 11, '建国記念の日'], [2, 23, '天皇誕生日'],
+   [3, spring, '春分の日'], [4, 29, '昭和の日'], [5, 3, '憲法記念日'], [5, 4, 'みどりの日'], [5, 5, 'こどもの日'],
+   [7, nthMon(7, 3), '海の日'], [8, 11, '山の日'], [9, nthMon(9, 3), '敬老の日'], [9, autumn, '秋分の日'],
+   [10, nthMon(10, 2), 'スポーツの日'], [11, 3, '文化の日'], [11, 23, '勤労感謝の日']]
+    .forEach(([m, d, n]) => { o[key(m, d)] = n; });
+  const keys = Object.keys(o).sort();
+  // 国民の休日（祝日にはさまれた平日）
+  keys.forEach(k => {
+    const t = new Date(k + 'T00:00:00'); t.setDate(t.getDate() + 2);
+    const k2 = `${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`;
+    const mid = new Date(k + 'T00:00:00'); mid.setDate(mid.getDate() + 1);
+    const km = `${mid.getFullYear()}-${pad2(mid.getMonth() + 1)}-${pad2(mid.getDate())}`;
+    if (o[k2] && !o[km] && mid.getDay() !== 0) o[km] = '国民の休日';
+  });
+  // 振替休日（日曜の祝日 → 次の祝日でない日）
+  Object.keys(o).sort().forEach(k => {
+    const t = new Date(k + 'T00:00:00');
+    if (t.getDay() !== 0) return;
+    do { t.setDate(t.getDate() + 1); } while (o[`${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`]);
+    o[`${t.getFullYear()}-${pad2(t.getMonth() + 1)}-${pad2(t.getDate())}`] = '振替休日';
+  });
+  return (HOL_CACHE[y] = o);
+}
+function holiday(d) { return holidaysOf(Number(d.slice(0, 4)))[d] || ''; }
+function holTag(d) { const n = holiday(d); return n ? `<span class="hol">${n}</span>` : ''; }
 function ymLabel(ym) { const [y, m] = ym.split('-').map(Number); return `${y}年${m}月`; }
 function addM(ym, n) { let [y, m] = ym.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${pad2(m)}`; }
 function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } }
@@ -334,6 +376,12 @@ async function vToday() {
   const rep = d.reports[t];
   let h = `<div class="card"><div class="muted">今日 ${md(t)} の担当</div>
     <div class="big">${who ? esc(who) : '<span class="muted">未設定</span>'}</div>`;
+  // 明日の担当（月をまたぐときは次の月のデータから）
+  const tmD = new Date(t + 'T00:00:00'); tmD.setDate(tmD.getDate() + 1);
+  const tm = `${tmD.getFullYear()}-${pad2(tmD.getMonth() + 1)}-${pad2(tmD.getDate())}`;
+  const tmData = tm.slice(0, 7) === t.slice(0, 7) ? d : S.cache[tm.slice(0, 7)];
+  const tmWho = tmData && tmData.shifts ? (tmData.shifts[tm] || '') : null;
+  const tomorrowLine = `<div class="muted mt">明日 ${md(tm)} の担当：${tmWho === null ? '…' : tmWho ? `<b style="color:var(--text)">${esc(tmWho)}</b>${tmWho === S.me ? '（あなた）' : ''}` : '未設定'}</div>`;
   if (rep) {
     h += `<div class="row mt"><span class="badge b-ok">完了</span>
       <span class="muted">${esc(rep.name)}・${esc(rep.at)}</span>
@@ -343,7 +391,7 @@ async function vToday() {
       ${memberSelect(`id="rep-${t}"`, who || S.me)}
       <button class="btn primary" data-act="report" data-date="${t}">完了報告</button></div>`;
   }
-  h += '</div>';
+  h += tomorrowLine + '</div>';
   h += linksCard();
   h += `<div class="card row between"><span>今日のデータ入力 <b>${S.mToday ? S.mToday.length : '…'}</b>件</span>
     <button class="btn small" data-act="tab" data-tab="input">入力する</button></div>`;
@@ -417,7 +465,7 @@ async function vShift() {
   h += '<div class="card"><div class="list">' + d.dates.map((x, i) => {
     const who = map[x] || '';
     const mk = who ? markOf(d, who, i) : '';
-    return `<div class="item"><span class="date ${wdc(x)}">${md(x)}</span>
+    return `<div class="item"><span class="date ${wdc(x)}">${md(x)}</span>${holTag(x)}
       <span class="grow">${fixed ? `<b>${esc(who || '—')}</b>` : memberSelect(`data-shift="${x}"`, who, '（なし）')}</span>
       ${mk ? `<span class="badge ${markCls(mk)}">${mk}</span>` : ''}
       ${d.reports[x] ? '<span class="badge b-ok">済</span>' : ''}</div>`;
@@ -443,10 +491,11 @@ async function vVote() {
   h += `<div class="card"><h2>回答状況</h2><div class="chips">` +
     d.members.map(n => `<span class="chip">${d.unanswered.indexOf(n) < 0 ? '✓' : '未'} ${esc(n)}</span>`).join('') +
     `</div><div class="row mt"><span class="muted">締切</span>
-      <input type="date" id="dl" value="${esc(d.setting.deadline)}">
+      <input type="date" id="dl" value="${esc(d.setting.deadline || d.deadline || '')}">
       <button class="btn small" data-act="dl">設定</button>
-      <button class="btn small" data-act="dlclear">締切なし</button>
-      <span class="muted">${d.setting.deadline ? (d.deadlinePassed ? '締切済み（未回答は△扱い）' : '') : '現在：締切なし'}</span></div></div>`;
+      ${d.setting.deadline ? '<button class="btn small" data-act="dlclear">自動（前月末）に戻す</button>' : ''}
+      <span class="muted">${d.deadline ? `現在：${md(d.deadline)}${d.deadlineAuto ? '（自動）' : ''}` : ''}${d.deadlinePassed ? '・締切済み（未回答は△扱い）' : ''}</span></div>
+      <p class="muted">締切日の夜22時ごろに締め切って、シフトの下書きを自動で作ります（未回答の人は△扱い）。</p></div>`;
 
   h += `<div class="card"><div class="row between"><h2 style="margin:0">担当可否を回答</h2>
     ${memberSelect('id="voteName"', v.name, '名前を選択')}</div>`;
@@ -458,7 +507,7 @@ async function vVote() {
       ${MARKS.map((m, k) => `<button class="btn small" data-act="vall" data-v="${m}">すべて${m}</button>`).join('')}
       <span class="muted">${blanks ? `未入力 ${blanks}日` : '全日入力済み'}</span></div>
       <div class="list mt">` + d.dates.map((x, i) => `<div class="item">
-        <span class="date ${wdc(x)}">${md(x)}</span><span class="grow"></span>
+        <span class="date ${wdc(x)}">${md(x)}</span>${holTag(x)}<span class="grow"></span>
         <span class="marks">${MARKS.map((m, k) => `<button class="mk m${k} ${v.answers[i] === m ? 'on' : ''}" data-act="vmk" data-i="${i}" data-v="${m}">${m}</button>`).join('')}</span>
       </div>`).join('') + `</div>
       <div class="sticky-save"><button class="btn primary" data-act="vsave" ${v.dirty ? '' : 'disabled'}>回答を保存</button></div>`;
@@ -687,6 +736,7 @@ function vMember() {
     <div class="row mt"><span class="muted">完了の連絡先（管理者）</span>${memberSelect('id="lineAdminSel"', n.lineAdmin, 'なし')}</div>
     <div class="list mt">
       <div class="item"><span class="muted" style="width:5.5em">朝8時ごろ</span><span class="grow">その日の担当者へ「パトロールお願いします」</span></div>
+      <div class="item"><span class="muted" style="width:5.5em">シフト確定時</span><span class="grow">全員へ、それぞれの担当日</span></div>
       <div class="item"><span class="muted" style="width:5.5em">完了報告時</span><span class="grow">担当者・実施者・管理者へ「完了しました」</span></div>
       <div class="item"><span class="muted" style="width:5.5em">夜22時ごろ</span><span class="grow">未報告なら担当者へ</span></div>
       <div class="item"><span class="muted" style="width:5.5em">25日・月末前日</span><span class="grow">17時ごろ、次月のシフト希望の告知・リマインド（まだ回答していない人だけ）</span></div>
@@ -793,7 +843,7 @@ const ACT = {
     if (put(await run(() => api('setDeadline', S.ym.vote, val)))) { toast('締切を設定しました'); render(); }
   },
   async dlclear() {
-    if (put(await run(() => api('setDeadline', S.ym.vote, '')))) { toast('締切なしにしました'); render(); }
+    if (put(await run(() => api('setDeadline', S.ym.vote, '')))) { toast('締切を自動（前月末）に戻しました'); render(); }
   },
 
   async export() {
@@ -1058,11 +1108,13 @@ const Mock = !IS_DEMO ? null : (() => {
     const shifts = {}; ds.forEach(d => { if (db.shifts[d] !== undefined) shifts[d] = db.shifts[d]; });
     const reports = {}; ds.forEach(d => { if (db.reports[d]) reports[d] = db.reports[d]; });
     const unanswered = members.filter(n => !votes[n] || votes[n].answers.some(v => !v));
-    const deadlinePassed = !!st.deadline && today > st.deadline;
+    const pdm = addM(ym, -1), pdd = dates(pdm);
+    const deadline = st.deadline || pdd[pdd.length - 1], deadlineAuto = !st.deadline;
+    const deadlinePassed = today > deadline;
     const pd = dates(addM(ym, -1)); const prevLast = db.shifts[pd[pd.length - 1]] || '';
     const totals = {}; db.members.forEach(m => { totals[m.name] = m.baseCount || 0; });
     Object.keys(db.reports).forEach(d => { if (d <= ds[ds.length - 1]) totals[db.reports[d].name] = (totals[db.reports[d].name] || 0) + 1; });
-    const md0 = { ym, dates: ds, members, setting: Object.assign({}, st), votes, shifts, reports, unanswered, deadlinePassed, prevLast, totals, today,
+    const md0 = { ym, dates: ds, members, setting: Object.assign({}, st), votes, shifts, reports, unanswered, deadline, deadlineAuto, deadlinePassed, prevLast, totals, today,
       work: (() => { const o = {}; db.work.filter(w => w.date.slice(0, 7) === ym).sort((a, b) => (a.date < b.date ? -1 : 1)).forEach(w => { (o[w.name] = o[w.name] || []).push(Object.assign({}, w)); }); return o; })(),
       fares: (() => { const o = {}; Object.keys(db.fares).forEach(k => { const [y, n] = k.split('|'); if (y === ym) o[n] = Object.assign({}, db.fares[k]); }); return o; })() };
     const av = {}; members.forEach(n => { const a = (votes[n] || {}).answers || []; av[n] = ds.map((_, i) => a[i] || '△'); });

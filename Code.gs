@@ -26,7 +26,7 @@ const SH = {
   LINE: 'LINE登録',
 };
 const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
-const APP_VERSION = '1.17';
+const APP_VERSION = '1.21';
 /* ▼ サイトの URL（通知の末尾に載せる。「設定」シートの APP_URL があればそちらを優先） */
 const SITE_URL = 'https://astpatrolstudent-dev.github.io/patrol/';
 /* ▼ 最初の画面のデータを、サーバー側に一時保存する時間（秒）。書き込みがあれば自動で捨てる */
@@ -89,11 +89,24 @@ const PATROL_HEADER = ['日付', '曜日', '担当（予定）', '実施者', '�
  * Web アプリ入口
  * ========================================================= */
 
+/**
+ * Apps Script の URL（…/exec）を直接開いたとき：今のサイト（GitHub Pages）へ案内する。
+ * Apps Script の中の古い画面は使わない（API は doPost だけ）。
+ */
 function doGet() {
-  return HtmlService.createHtmlOutputFromFile('index')
+  const url = getSettings_().APP_URL || SITE_URL;
+  const safe = String(url).replace(/[<>"']/g, '');
+  const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans',sans-serif;padding:32px 20px;text-align:center;line-height:1.7">
+<p style="font-size:18px;font-weight:700">パトロールシフトのサイトは移動しました</p>
+<p><a href="${safe}" target="_top" style="display:inline-block;background:#2f6fde;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:700">サイトを開く</a></p>
+<p style="color:#666;font-size:14px">${safe}<br>ブックマークやホーム画面は、このアドレスで登録し直してください。</p>
+<script>try { window.top.location.href = ${JSON.stringify(safe)}; } catch (e) {}</script>
+</body></html>`;
+  return HtmlService.createHtmlOutput(html)
     .setTitle('パトロールシフト')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 /*
@@ -541,19 +554,35 @@ function saveShift(ym, map) {
 function setShiftStatus(ym, status) {
   assertYm_(ym);
   if (status !== STATUS.DRAFT && status !== STATUS.FIXED) throw new Error('状態の指定が不正です');
-  return withLock_(() => {
+  const md = withLock_(() => {
     const cur = shifts_(ym);
     if (status === STATUS.FIXED && !Object.keys(cur).some(d => cur[d])) {
       throw new Error('シフトがまだありません');
     }
     updateMonthSetting_(ym, { status });
-    const md = monthData_(ym);
-    if (status === STATUS.FIXED) {
-      const counts = countBy_(md.dates.map(d => md.shifts[d]).filter(Boolean));
-      const summary = Object.keys(counts).map(k => `${k} ${counts[k]}回`).join(' / ');
-      safeNotify_(() => `【${ymLabel_(ym)}のシフトが確定しました】\n${summary}${appUrl_()}`);
-    }
-    return md;
+    return monthData_(ym);
+  });
+  if (status === STATUS.FIXED) {
+    const counts = countBy_(md.dates.map(d => md.shifts[d]).filter(Boolean));
+    const summary = Object.keys(counts).map(k => `${k} ${counts[k]}回`).join(' / ');
+    safeNotify_(() => `【${ymLabel_(ym)}のシフトが確定しました】\n${summary}${appUrl_()}`);
+    // LINE：一人ひとりに、自分の担当日を送る
+    try { notifyFixed_(ym, md); } catch (e) { console.error(e); }
+  }
+  return md;
+}
+
+/** シフト確定のお知らせ（LINE）。参加中の全員に、その人の担当日を1通ずつ */
+function notifyFixed_(ym, md) {
+  const mine = {};
+  md.dates.forEach(d => { const w = md.shifts[d]; if (w) (mine[w] = mine[w] || []).push(md_(d)); });
+  const names = members_(false).map(m => m.name);
+  names.forEach(n => {
+    const ds = mine[n] || [];
+    lineSendTo_([n],
+      `【${ymLabel_(ym)}のシフトが確定しました】\n` +
+      (ds.length ? `${n}さんの担当（${ds.length}回）：\n${ds.join('、')}` : `${n}さんの担当はありません。`) +
+      `\n担当日の朝8時ごろにも、お知らせが届きます。${appUrl_()}`);
   });
 }
 
@@ -1236,9 +1265,10 @@ function dailyReminder() {
   const md = monthData_(nx);
   if (!md.members.length || md.setting.status !== STATUS.NONE) return;
 
-  if (md.unanswered.length === 0 || md.deadlinePassed) {
-    // 全員回答済み or 締切を過ぎた（未回答は△扱い）→ 下書きを作る
-    try { withLock_(() => generate_(nx)); } catch (e) { console.error(e); }
+  const closing = t >= md.deadline;   // 締切日の夜（22時ごろ）に締め切る
+  if (md.unanswered.length === 0 || md.deadlinePassed || closing) {
+    // 全員回答済み or 締切（未回答は△扱い）→ 下書きを作る
+    try { withLock_(() => generate_(nx, closing)); } catch (e) { console.error(e); }
     return;
   }
 
@@ -1261,7 +1291,7 @@ function morningReminder() {
 
 /**
  * 毎日17時ごろのトリガー：次月のシフト希望（投票）
- *   告知（VOTE_ANNOUNCE_DAY、既定25日）：参加中の全員へ
+ *   告知（VOTE_ANNOUNCE_DAY、既定25日）：参加中で、まだ回答していない人へ（先に出した人には送らない）
  *   リマインド（VOTE_REMIND_DAY、既定は空＝月末の前日）：まだ回答していない人へ
  * 下書きができていたら送らない。
  */
@@ -1279,10 +1309,10 @@ function voteNotice_(st, t) {
   const nx = addMonths_(monthOf_(t), 1);
   const md = monthData_(nx);
   if (!md.members.length || md.setting.status !== STATUS.NONE) return;
-  const dl = md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '';
+  const dl = `\n締切：${md_(md.deadline)}（締切後の未回答は△扱い）`;
   if (day === announceDay) {
     safeNotify_(() => `【${ymLabel_(nx)}のシフト希望】\n担当できる日を〇△×で回答してください。${dl}\nサイトの「投票」タブから回答できます。${appUrl_()}`);
-    md.members.forEach(n => lineSendTo_([n],
+    md.unanswered.forEach(n => lineSendTo_([n],
       `${n}さん、${ymLabel_(nx)}のシフト希望の受付を始めました。\n担当できる日を〇△×で回答してください。${dl}\nサイトの「投票」タブから回答できます。${appUrl_()}`));
   } else if (md.unanswered.length) {
     safeNotify_(m => `【${ymLabel_(nx)}のシフト希望 リマインド】\n未回答：${md.unanswered.map(m).join('、')}${dl}\n回答をお願いします。${appUrl_()}`);
@@ -1295,13 +1325,13 @@ function voteNotice_(st, t) {
  * シフト生成
  * ========================================================= */
 
-function generate_(ym) {
+function generate_(ym, closing) {
   const md = monthData_(ym);
   if (md.setting.status === STATUS.FIXED) {
     throw new Error('確定済みです。作り直す場合は先に「確定を解除」してください');
   }
   if (!md.members.length) throw new Error('メンバーが登録されていません');
-  if (md.unanswered.length && !md.deadlinePassed) {
+  if (md.unanswered.length && !md.deadlinePassed && !closing) {
     throw new Error(
       `まだ回答していない人がいます：${md.unanswered.join('、')}\n` +
       '全員が回答するか、締切日を過ぎると作成できます（締切後の未回答は△扱い）。');
@@ -1412,17 +1442,26 @@ function monthData_(ym) {
   const shifts = setting.status === STATUS.NONE ? {} : shifts_(ym);
   const reports = reports_(ym);
   const unanswered = members.filter(nm => !votes[nm] || votes[nm].answers.some(v => !v));
-  const deadlinePassed = !!setting.deadline && today_() > setting.deadline;
+  // 締切：設定がなければ「前月の末日」（その日の夜22時ごろに締め切って下書きを作る）
+  const deadlineAuto = !setting.deadline;
+  const deadline = setting.deadline || autoDeadline_(ym);
+  const deadlinePassed = today_() > deadline;
   const prevYm = addMonths_(ym, -1);
   const prevDates = datesOf_(prevYm);
   const prevLast = shifts_(prevYm)[prevDates[prevDates.length - 1]] || '';
   const totals = totals_(dates[dates.length - 1]);
   const md = {
-    ym, dates, members, setting, votes, shifts, reports, unanswered, deadlinePassed, prevLast, totals,
+    ym, dates, members, setting, votes, shifts, reports, unanswered, deadline, deadlineAuto, deadlinePassed, prevLast, totals,
     work: work_(ym), fares: fares_(ym), today: today_(),
   };
   md.warnings = shiftWarnings_(md);
   return md;
+}
+
+/** 締切を設定していない月の締切＝前月の末日（11月分なら10/31） */
+function autoDeadline_(ym) {
+  const p = addMonths_(ym, -1);
+  return `${p}-${String(daysInMonth_(p)).padStart(2, '0')}`;
 }
 
 function availOf_(md, fillBlank) {
