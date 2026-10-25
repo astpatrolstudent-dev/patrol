@@ -26,7 +26,11 @@ const SH = {
   LINE: 'LINE登録',
 };
 const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
-const APP_VERSION = '1.13';
+const APP_VERSION = '1.16';
+/* ▼ サイトの URL（通知の末尾に載せる。「設定」シートの APP_URL があればそちらを優先） */
+const SITE_URL = 'https://astpatrolstudent-dev.github.io/patrol/';
+/* ▼ 最初の画面のデータを、サーバー側に一時保存する時間（秒）。書き込みがあれば自動で捨てる */
+const BOOT_CACHE_SEC = 600;
 
 /*
  * ▼ ニーズ調査サイトのログイン情報（⚙画面でコピーできるように表示する）
@@ -175,8 +179,8 @@ function setup() {
     ['LINE_CHANNEL_ACCESS_TOKEN', '', 'LINE公式アカウント（Messaging API）のチャネルアクセストークン（空なら LINE には送らない）'],
     ['LINE_ADMIN', '', 'LINE で「完了」「シフト下書き」の連絡を受け取る管理者の名前（Webの⚙からも変更可）'],
     ['REMIND_ENABLED', 'TRUE', 'FALSE にするとリマインドを一時停止'],
-    ['VOTE_REMIND_START_DAY', '20', '締切なしの月：前月のこの日から、未回答者に毎晩リマインド'],
-    ['VOTE_REMIND_DAYS_BEFORE', '3', '締切ありの月：締切の何日前から毎晩リマインドするか'],
+    ['VOTE_ANNOUNCE_DAY', '25', '次月のシフト希望（投票）を全員に告知する日（朝8時ごろ）'],
+    ['VOTE_REMIND_DAY', '27', 'まだ回答していない人にリマインドする日（朝8時ごろ）'],
     ['APP_URL', '', 'この Web アプリの URL（通知の末尾に載せる）'],
     ['MANAGER_NAME', '', '管理者（名目）の名前。活動実績の「手当」欄に載る（Webの「メンバー」タブからも変更可）'],
     ['MANAGER_ALLOWANCE_H', '3', '管理者手当（時間）'],
@@ -309,12 +313,14 @@ function installTriggers() {
   ScriptApp.newTrigger('morningReminder')
     .timeBased().atHour(8).nearMinute(0).everyDays(1).inTimezone(TZ)
     .create();
-  toast_('毎朝8時ごろ・毎晩22時ごろのお知らせを設定しました');
+  ScriptApp.newTrigger('warmBootCache').timeBased().everyMinutes(5).create();
+  warmBootCache();
+  toast_('毎朝8時ごろ・毎晩22時ごろのお知らせと、表示を速くする準備（5分おき）を設定しました');
 }
 
 function removeTriggers() {
   ScriptApp.getProjectTriggers()
-    .filter(t => ['dailyReminder', 'morningReminder'].indexOf(t.getHandlerFunction()) >= 0)
+    .filter(t => ['dailyReminder', 'morningReminder', 'warmBootCache'].indexOf(t.getHandlerFunction()) >= 0)
     .forEach(t => ScriptApp.deleteTrigger(t));
 }
 
@@ -347,6 +353,78 @@ function getAppData() {
 
 /** 起動時に1回だけ呼ぶ：前月・今月・来月をまとめて返す */
 function getBootstrap() {
+  // サーバー側の一時保存があればそれを返す（スプレッドシートを読まない分だけ速い）
+  const key = bootKey_();
+  try {
+    const hit = CacheService.getScriptCache().get(key);
+    if (hit) return JSON.parse(hit);
+  } catch (e) { console.warn(e.message); }
+  const app = buildBootstrap_();
+  try { CacheService.getScriptCache().put(key, JSON.stringify(app), BOOT_CACHE_SEC); } catch (e) { console.warn(e.message); }
+  return app;
+}
+function bootKey_() { return 'boot:' + APP_VERSION + ':' + today_(); }
+/** 5分おきのトリガー：一時保存を作り直しておく（スプレッドシートを直接直した分も5分以内に反映） */
+function warmBootCache() {
+  let app;
+  try {
+    app = buildBootstrap_();
+    CacheService.getScriptCache().put(bootKey_(), JSON.stringify(app), BOOT_CACHE_SEC);
+  } catch (e) { console.warn(e.message); return; }
+  try { writeSnapshot_(app); } catch (e) { console.warn('表示用スナップショット：' + e.message); }
+}
+
+/* ---------- 表示用スナップショット（初めて開くときに Apps Script を待たないため） ----------
+ * 最初の画面のデータ（個人情報・ID/PW を除く）を、専用の小さなスプレッドシートに JSON で書いておく。
+ * 画面は Google スプレッドシートの読み出し（gviz）から1秒以内に取り、まず表示する。
+ * そのあと、いつもどおり Apps Script から最新を取って差し替える。
+ * 作り方：エディタで setupSnapshot を1回実行 → ログに出る ID を index.html の SNAPSHOT_ID に入れる。
+ */
+const SNAPSHOT_SHEET = 'snapshot';
+const SNAPSHOT_CHUNK = 20000;
+
+function setupSnapshot() {
+  const props = PropertiesService.getScriptProperties();
+  let id = props.getProperty('SNAPSHOT_SS_ID');
+  let ss = null;
+  if (id) { try { ss = SpreadsheetApp.openById(id); } catch (e) { ss = null; } }
+  if (!ss) {
+    ss = SpreadsheetApp.create('パトロールシフト_表示用（自動作成・編集しないでください）');
+    id = ss.getId();
+    props.setProperty('SNAPSHOT_SS_ID', id);
+    ss.getSheets()[0].setName(SNAPSHOT_SHEET);
+    if (PDF_FOLDER_ID) { try { DriveApp.getFileById(id).moveTo(DriveApp.getFolderById(PDF_FOLDER_ID)); } catch (e) { console.warn(e.message); } }
+  }
+  // リンクを知っている人は閲覧のみ（中身は最初の画面のデータだけ。個人情報・ID/PW は入れない）
+  DriveApp.getFileById(id).setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  props.deleteProperty('SNAPSHOT_HASH');
+  warmBootCache();
+  const msg = 'index.html の SNAPSHOT_ID に、次の ID を入れてください：' + id;
+  console.log(msg);
+  toast_(msg);
+  return id;
+}
+
+function writeSnapshot_(app) {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('SNAPSHOT_SS_ID');
+  if (!id) return;
+  const pub = JSON.parse(JSON.stringify(app));
+  delete pub.needs;
+  pub.members = (pub.members || []).map(m => ({ name: m.name, active: m.active, baseCount: m.baseCount }));
+  pub.snapshotAt = now_();
+  const body = JSON.stringify(Object.assign({}, pub, { snapshotAt: '' }));
+  const hash = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, body, Utilities.Charset.UTF_8));
+  if (props.getProperty('SNAPSHOT_HASH') === hash) return;   // 変わっていなければ書かない
+  const json = JSON.stringify(pub);
+  const rows = [];
+  for (let i = 0; i < json.length; i += SNAPSHOT_CHUNK) rows.push([json.slice(i, i + SNAPSHOT_CHUNK)]);
+  const sh = SpreadsheetApp.openById(id).getSheetByName(SNAPSHOT_SHEET) || SpreadsheetApp.openById(id).getSheets()[0];
+  sh.clearContents();
+  sh.getRange(1, 1, rows.length, 1).setNumberFormat('@').setValues(rows);
+  props.setProperty('SNAPSHOT_HASH', hash);
+}
+function buildBootstrap_() {
   const app = getAppData();
   app.months = {};
   [-1, 0, 1].forEach(k => {
@@ -1053,6 +1131,9 @@ function lineApi_(path, payload) {
   return true;
 }
 function linePush_(userId, text) {
+  // LINE の中のブラウザではなく、ふだんのブラウザ（Safari・Chrome）で開くようにする（前回の内容が残って速く開ける）
+  const u = getSettings_().APP_URL || SITE_URL;
+  if (u) text = String(text).split(u).join(u + (u.indexOf('?') >= 0 ? '&' : '?') + 'openExternalBrowser=1');
   return lineApi_('push', { to: userId, messages: [{ type: 'text', text: String(text).slice(0, 4900) }] });
 }
 function lineReply_(token, text) {
@@ -1158,43 +1239,48 @@ function dailyReminder() {
     return;
   }
 
-  let remind;
-  if (md.setting.deadline) {
-    const left = daysBetween_(t, md.setting.deadline);
-    remind = left >= 0 && left <= Number(st.VOTE_REMIND_DAYS_BEFORE || 3);
-  } else {
-    remind = Number(t.slice(8)) >= Number(st.VOTE_REMIND_START_DAY || 20);
-  }
-  if (remind) {
-    safeNotify_(m =>
-      `【${ymLabel_(nx)}の担当可否 投票】\n` +
-      `未回答：${md.unanswered.map(m).join('、')}` +
-      (md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '') +
-      `\n回答をお願いします。${appUrl_()}`);
-    // LINE は未回答の人それぞれに。通数を抑えるため、締切ありは3日前・前日・当日、締切なしは3日おき
-    const day = Number(t.slice(8)), start = Number(st.VOTE_REMIND_START_DAY || 20);
-    const lineDay = md.setting.deadline
-      ? [3, 1, 0].indexOf(daysBetween_(t, md.setting.deadline)) >= 0
-      : (day - start) % 3 === 0;
-    if (lineDay) md.unanswered.forEach(n => lineSendTo_([n],
-      `${n}さん、${ymLabel_(nx)}の担当可否の投票がまだです。` +
-      (md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '') +
-      `\nサイトの「投票」タブから回答をお願いします。${appUrl_()}`));
-  }
+  // 投票の告知・リマインドは朝のお知らせ（morningReminder）で、25日・27日に送る
 }
 
-/** 毎朝8時ごろ：今日の担当者に LINE でお知らせ */
+/** 毎朝8時ごろ：次月のシフト希望の告知（25日）とリマインド（27日）、今日の担当者へのお知らせ */
 function morningReminder() {
   const st = getSettings_();
   if (String(st.REMIND_ENABLED || 'TRUE').toUpperCase() === 'FALSE') return;
   const t = today_();
   const ym = monthOf_(t);
+  try { voteNotice_(st, t); } catch (e) { console.error(e); }
   if (monthData_(ym).setting.status !== STATUS.FIXED) return; // シフト確定前は送らない
   const who = shifts_(ym)[t];
   if (!who || reports_(ym)[t]) return;
   lineSendTo_([who],
     `${who}さん、おはようございます。\n今日 ${md_(t)} のパトロール担当です。よろしくお願いします。\n` +
     `終わったら、サイトで「完了報告」を押してください。${appUrl_()}`);
+}
+
+/**
+ * 次月のシフト希望（投票）
+ *   告知（VOTE_ANNOUNCE_DAY、既定25日）：参加中の全員へ
+ *   リマインド（VOTE_REMIND_DAY、既定27日）：まだ回答していない人へ
+ * どちらも朝8時ごろ。下書きができていたら送らない。
+ */
+function voteNotice_(st, t) {
+  const day = Number(t.slice(8));
+  const announceDay = Number(st.VOTE_ANNOUNCE_DAY || 25);
+  const remindDay = Number(st.VOTE_REMIND_DAY || 27);
+  if (day !== announceDay && day !== remindDay) return;
+  const nx = addMonths_(monthOf_(t), 1);
+  const md = monthData_(nx);
+  if (!md.members.length || md.setting.status !== STATUS.NONE) return;
+  const dl = md.setting.deadline ? `\n締切：${md_(md.setting.deadline)}` : '';
+  if (day === announceDay) {
+    safeNotify_(() => `【${ymLabel_(nx)}のシフト希望】\n担当できる日を〇△×で回答してください。${dl}\nサイトの「投票」タブから回答できます。${appUrl_()}`);
+    md.members.forEach(n => lineSendTo_([n],
+      `${n}さん、${ymLabel_(nx)}のシフト希望の受付を始めました。\n担当できる日を〇△×で回答してください。${dl}\nサイトの「投票」タブから回答できます。${appUrl_()}`));
+  } else if (md.unanswered.length) {
+    safeNotify_(m => `【${ymLabel_(nx)}のシフト希望 リマインド】\n未回答：${md.unanswered.map(m).join('、')}${dl}\n回答をお願いします。${appUrl_()}`);
+    md.unanswered.forEach(n => lineSendTo_([n],
+      `${n}さん、${ymLabel_(nx)}のシフト希望がまだ回答されていません。${dl}\nサイトの「投票」タブから回答をお願いします。${appUrl_()}`));
+  }
 }
 
 /* =========================================================
@@ -1509,7 +1595,7 @@ function setSetting_(key, val) {
  * ========================================================= */
 
 function appUrl_() {
-  const u = getSettings_().APP_URL;
+  const u = getSettings_().APP_URL || SITE_URL;
   return u ? '\n' + u : '';
 }
 
@@ -1677,7 +1763,15 @@ function readRows_(name) {
   return rows || [];
 }
 
-function dirty_() { DB_ = null; }
+let BOOT_DROPPED_ = false;
+function dirty_() {
+  DB_ = null;
+  // 書き込みがあったら、最初の画面の一時保存を捨てる（1回の実行で1度だけ）
+  if (!BOOT_DROPPED_) {
+    BOOT_DROPPED_ = true;
+    try { CacheService.getScriptCache().remove(bootKey_()); } catch (e) {}
+  }
+}
 
 /** シートがなくても空として読む（後から追加したシート用） */
 function readRowsOpt_(name) { return db_()[name] || []; }

@@ -152,6 +152,10 @@ const NEEDS_LINKS = [
   { name: 'ニーズ調査のHP', desc: 'future-city.go.jp/platform（下の ID・PW でログイン）', url: 'https://future-city.go.jp/platform/' },
 ];
 
+/* ▼ 表示用スナップショットのスプレッドシート ID（Apps Script で setupSnapshot を実行するとログに出る）。
+ *   入れておくと、初めて開くときも Apps Script を待たずに1秒前後で表示できる。空なら使わない */
+const SNAPSHOT_ID = '1zY6uuBJ3ZaN_ToFcojx81OFCOxNb4nvhZfsIbEl-qOg';
+
 const IS_GAS = typeof google !== 'undefined' && google.script && google.script.run;
 const IS_DEMO = !IS_GAS && !API_URL;
 const S = { app: null, me: '', tab: 'today', ym: {}, cache: {}, edit: null, vote: null, exp: null, workName: '', wDraft: {}, wexp: null, mKind: 'project', mToday: null, mDraft: {} };
@@ -580,7 +584,7 @@ async function vWork() {
 function loadMasterInfo() {
   if (S.mLoading) return;
   S.mLoading = true;
-  const done = () => { S.mLoading = false; if (S.tab === 'today' || S.tab === 'input') softRender(); };
+  const done = () => { S.mLoading = false; if (S.app && (S.tab === 'today' || S.tab === 'input')) softRender(); };
   api('getMasterInfo')
     .then(r => { S.mToday = r.today || []; S.mLatest = r.latest == null ? false : r.latest; saveBoot(); done(); })
     .catch(() => {
@@ -684,7 +688,8 @@ function vMember() {
     <div class="list mt">
       <div class="item"><span class="muted" style="width:5.5em">朝8時ごろ</span><span class="grow">その日の担当者へ「パトロールお願いします」</span></div>
       <div class="item"><span class="muted" style="width:5.5em">完了報告時</span><span class="grow">担当者・実施者・管理者へ「完了しました」</span></div>
-      <div class="item"><span class="muted" style="width:5.5em">夜22時ごろ</span><span class="grow">未報告なら担当者へ／投票の未回答者へ</span></div>
+      <div class="item"><span class="muted" style="width:5.5em">夜22時ごろ</span><span class="grow">未報告なら担当者へ</span></div>
+      <div class="item"><span class="muted" style="width:5.5em">25日・27日</span><span class="grow">朝8時ごろ、次月のシフト希望の告知（全員）・リマインド（未回答の人）</span></div>
     </div>
     <div class="row mt"><button class="btn" data-act="testNotify">自分にテスト送信</button><button class="btn" data-act="lineQuota">今月の送信数</button></div>
     <p class="muted">無料プランは月200通まで。ひとりに1回送ると1通です。</p>`
@@ -930,23 +935,53 @@ function applyBoot(app) {
   }
   renderMe();
 }
+/** スナップショット（Google スプレッドシートの読み出し）から最初の画面のデータを取る。失敗したら null */
+async function loadSnapshot() {
+  if (!SNAPSHOT_ID || IS_DEMO || IS_GAS) return null;
+  const url = `https://docs.google.com/spreadsheets/d/${SNAPSHOT_ID}/gviz/tq?tqx=out:csv&headers=0&sheet=snapshot&tq=${encodeURIComponent('select A')}&_=${Date.now()}`;
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    const res = await fetch(url, { credentials: 'omit', signal: ctl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const csv = await res.text();
+    const json = csv.split('\n').filter(l => l.length).map(l => l.replace(/^"|"$/g, '').replace(/""/g, '"')).join('');
+    const o = JSON.parse(json);
+    return o && o.members && o.months ? o : null;
+  } catch (e) { return null; }
+}
 async function init() {
   if (IS_DEMO) $('#demo').hidden = false;
-  const saved = loadBoot();
+  // サーバーへの問い合わせは最初に投げておく（スナップショットや前回の内容を出している間に進む）
+  const freshP = api('getBootstrap').then(r => ({ r }), e => ({ e }));
+  if (!IS_DEMO) loadMasterInfo();
+  let saved = loadBoot();
+  if (!saved) {
+    // 初めての端末：Apps Script より速いスナップショットを先に試す
+    const snap = await loadSnapshot();
+    if (snap) saved = { app: snap, months: snap.months, mLatest: null };
+  }
   if (saved) {
     // 前回の内容ですぐ表示 → 裏で最新を取りに行く
     applyBoot(Object.assign({}, saved.app, { months: saved.months || {} }));
     if (saved.mLatest) S.mLatest = saved.mLatest;
     syncPill('最新に更新中…');
     render();
-  } else busy(true);
+  } else {
+    busy(true);
+    $('#view').innerHTML = `<div class="card"><b>読み込み中…</b>
+      <p class="muted">この端末で初めて開くときは、数秒〜十数秒かかることがあります。2回目からはすぐに表示されます。</p>
+      <p class="muted">LINE から開いた場合は、右下（または右上）のメニューから「ブラウザで開く」を選ぶと、次から速く開けます。</p></div>`;
+  }
   try {
-    const fresh = await api('getBootstrap');
-    applyBoot(fresh);
+    const got = await freshP;
+    if (got.e) throw got.e;
+    applyBoot(got.r);
     saveBoot();
     syncPill('');
     if (saved) softRender(); else render();
-    loadMasterInfo();   // 入力タブの情報も裏で先読み
+    if (IS_DEMO) loadMasterInfo();
   } catch (e) {
     if (saved) { syncPill(''); toast('最新の情報を取得できませんでした（前回の内容を表示しています）'); }
     else $('#view').innerHTML = errorCard(e);
