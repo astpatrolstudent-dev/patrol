@@ -26,7 +26,7 @@ const SH = {
   LINE: 'LINE登録',
 };
 const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
-const APP_VERSION = '1.16';
+const APP_VERSION = '1.17';
 /* ▼ サイトの URL（通知の末尾に載せる。「設定」シートの APP_URL があればそちらを優先） */
 const SITE_URL = 'https://astpatrolstudent-dev.github.io/patrol/';
 /* ▼ 最初の画面のデータを、サーバー側に一時保存する時間（秒）。書き込みがあれば自動で捨てる */
@@ -179,8 +179,8 @@ function setup() {
     ['LINE_CHANNEL_ACCESS_TOKEN', '', 'LINE公式アカウント（Messaging API）のチャネルアクセストークン（空なら LINE には送らない）'],
     ['LINE_ADMIN', '', 'LINE で「完了」「シフト下書き」の連絡を受け取る管理者の名前（Webの⚙からも変更可）'],
     ['REMIND_ENABLED', 'TRUE', 'FALSE にするとリマインドを一時停止'],
-    ['VOTE_ANNOUNCE_DAY', '25', '次月のシフト希望（投票）を全員に告知する日（朝8時ごろ）'],
-    ['VOTE_REMIND_DAY', '27', 'まだ回答していない人にリマインドする日（朝8時ごろ）'],
+    ['VOTE_ANNOUNCE_DAY', '25', '次月のシフト希望（投票）を全員に告知する日（17時ごろ）'],
+    ['VOTE_REMIND_DAY', '', 'まだ回答していない人にリマインドする日（17時ごろ）。空なら月末の前日'],
     ['APP_URL', '', 'この Web アプリの URL（通知の末尾に載せる）'],
     ['MANAGER_NAME', '', '管理者（名目）の名前。活動実績の「手当」欄に載る（Webの「メンバー」タブからも変更可）'],
     ['MANAGER_ALLOWANCE_H', '3', '管理者手当（時間）'],
@@ -313,14 +313,17 @@ function installTriggers() {
   ScriptApp.newTrigger('morningReminder')
     .timeBased().atHour(8).nearMinute(0).everyDays(1).inTimezone(TZ)
     .create();
+  ScriptApp.newTrigger('voteReminder')
+    .timeBased().atHour(17).nearMinute(0).everyDays(1).inTimezone(TZ)
+    .create();
   ScriptApp.newTrigger('warmBootCache').timeBased().everyMinutes(5).create();
   warmBootCache();
-  toast_('毎朝8時ごろ・毎晩22時ごろのお知らせと、表示を速くする準備（5分おき）を設定しました');
+  toast_('毎朝8時ごろ・17時ごろ（シフト希望）・毎晩22時ごろのお知らせと、表示を速くする準備（5分おき）を設定しました');
 }
 
 function removeTriggers() {
   ScriptApp.getProjectTriggers()
-    .filter(t => ['dailyReminder', 'morningReminder', 'warmBootCache'].indexOf(t.getHandlerFunction()) >= 0)
+    .filter(t => ['dailyReminder', 'morningReminder', 'voteReminder', 'warmBootCache'].indexOf(t.getHandlerFunction()) >= 0)
     .forEach(t => ScriptApp.deleteTrigger(t));
 }
 
@@ -1242,13 +1245,12 @@ function dailyReminder() {
   // 投票の告知・リマインドは朝のお知らせ（morningReminder）で、25日・27日に送る
 }
 
-/** 毎朝8時ごろ：次月のシフト希望の告知（25日）とリマインド（27日）、今日の担当者へのお知らせ */
+/** 毎朝8時ごろ：今日の担当者へのお知らせ */
 function morningReminder() {
   const st = getSettings_();
   if (String(st.REMIND_ENABLED || 'TRUE').toUpperCase() === 'FALSE') return;
   const t = today_();
   const ym = monthOf_(t);
-  try { voteNotice_(st, t); } catch (e) { console.error(e); }
   if (monthData_(ym).setting.status !== STATUS.FIXED) return; // シフト確定前は送らない
   const who = shifts_(ym)[t];
   if (!who || reports_(ym)[t]) return;
@@ -1258,15 +1260,21 @@ function morningReminder() {
 }
 
 /**
- * 次月のシフト希望（投票）
+ * 毎日17時ごろのトリガー：次月のシフト希望（投票）
  *   告知（VOTE_ANNOUNCE_DAY、既定25日）：参加中の全員へ
- *   リマインド（VOTE_REMIND_DAY、既定27日）：まだ回答していない人へ
- * どちらも朝8時ごろ。下書きができていたら送らない。
+ *   リマインド（VOTE_REMIND_DAY、既定は空＝月末の前日）：まだ回答していない人へ
+ * 下書きができていたら送らない。
  */
+function voteReminder() {
+  const st = getSettings_();
+  if (String(st.REMIND_ENABLED || 'TRUE').toUpperCase() === 'FALSE') return;
+  voteNotice_(st, today_());
+}
 function voteNotice_(st, t) {
   const day = Number(t.slice(8));
   const announceDay = Number(st.VOTE_ANNOUNCE_DAY || 25);
-  const remindDay = Number(st.VOTE_REMIND_DAY || 27);
+  const lastDay = daysInMonth_(monthOf_(t));
+  const remindDay = Number(st.VOTE_REMIND_DAY || (lastDay - 1));   // 月末の前日（10月なら30日、2月なら27日か28日）
   if (day !== announceDay && day !== remindDay) return;
   const nx = addMonths_(monthOf_(t), 1);
   const md = monthData_(nx);
