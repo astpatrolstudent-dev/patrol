@@ -26,7 +26,11 @@ const SH = {
   LINE: 'LINE登録',
 };
 const LINE_HEADER = ['名前', 'LINEユーザーID', '登録日時'];
-const APP_VERSION = '1.21';
+const APP_VERSION = '1.22';
+/* ▼ 出力する PDF の名前（〇 には月の数字が入る）。同じ年の同じ月は上書きし、年ごとのフォルダに分けて保存する */
+const PDF_PREFIX = 'Platform Clover ';
+const shiftPdfName_ = ym => `${PDF_PREFIX}${Number(ym.slice(5))}月パトロールシフト.pdf`;
+const hoursPdfName_ = ym => `${PDF_PREFIX}${Number(ym.slice(5))}月作業時間報告.pdf`;
 /* ▼ サイトの URL（通知の末尾に載せる。「設定」シートの APP_URL があればそちらを優先） */
 const SITE_URL = 'https://astpatrolstudent-dev.github.io/patrol/';
 /* ▼ 最初の画面のデータを、サーバー側に一時保存する時間（秒）。書き込みがあれば自動で捨てる */
@@ -117,7 +121,7 @@ function doGet() {
 const API_ = {
   getBootstrap, getMonthData, addMember, setMemberActive, saveVote, setDeadline,
   generateShift, saveShift, setShiftStatus, reportDone, cancelReport, setManager,
-  exportReport, testNotify, setLineAdmin, lineQuota,
+  exportReport, exportShift, testNotify, setLineAdmin, lineQuota,
   saveProfile, addWork, deleteWork, saveFare, exportWorkReport,
   getMasterToday, getMasterLatest, getMasterInfo, addMaster, undoMaster,
 };
@@ -743,12 +747,9 @@ function exportReport(ym) {
     [90, 45, 90, 105, 24, 90, 75, 75, 55].forEach((w, i) => s.setColumnWidth(i + 1, w));
     SpreadsheetApp.flush();
 
-    const fileName = `活動実績_${ym}.pdf`;
+    const fileName = hoursPdfName_(ym);
     const blob = pdfOf_(ss, s, fileName);
-    const folder = folder_();
-    const old = folder.getFilesByName(fileName);
-    while (old.hasNext()) old.next().setTrashed(true);
-    const file = folder.createFile(blob);
+    const file = savePdf_(ym, blob);
 
     return {
       fileName,
@@ -931,6 +932,76 @@ function fetchExport_(url) {
   });
   if (res.getResponseCode() !== 200) throw new Error('ファイルの作成に失敗しました（' + res.getResponseCode() + '）。少し待ってもう一度お試しください');
   return res.getBlob();
+}
+
+/** PDF を「保存先フォルダ／2026年」に保存（同じ名前の古いファイルはゴミ箱へ） */
+function savePdf_(ym, blob) {
+  const parent = folder_();
+  const yName = ym.slice(0, 4) + '年';
+  const it = parent.getFoldersByName(yName);
+  const folder = it.hasNext() ? it.next() : parent.createFolder(yName);
+  const old = folder.getFilesByName(blob.getName());
+  while (old.hasNext()) old.next().setTrashed(true);
+  return folder.createFile(blob);
+}
+
+/**
+ * シフトだけの PDF（日付・曜日・担当者）
+ * holidays：画面側で計算した祝日 {'2026-11-03': '文化の日', …}（赤字にする）
+ */
+function exportShift(ym, holidays) {
+  assertYm_(ym);
+  holidays = holidays && typeof holidays === 'object' ? holidays : {};
+  return withLock_(() => {
+    const md = monthData_(ym);
+    if (!md.dates.some(d => md.shifts[d])) throw new Error('この月のシフトはまだありません');
+    const mNum = Number(ym.slice(5));
+    const fixed = md.setting.status === STATUS.FIXED;
+    const ss = ssPatrol_();
+    const name = 'シフト_' + ym;
+    let s = ss.getSheetByName(name);
+    if (s) s.clear();
+    else s = ss.insertSheet(name, ss.getSheets().length);
+    s.setHiddenGridlines(true);
+
+    s.getRange('A1').setValue(`Platform Clover ${mNum}月パトロールシフト${fixed ? '' : '（下書き）'}`)
+      .setFontSize(15).setFontWeight('bold');
+    s.getRange('A2').setValue(`${ymLabel_(ym)}　作成：${now_()}`).setFontSize(9).setFontColor('#666666');
+    const n = md.dates.length;
+    s.getRange(4, 1, 1, 3).setValues([['日付', '曜日', '担当']])
+      .setFontWeight('bold').setBackground('#e8eef5').setHorizontalAlignment('center');
+    s.getRange(5, 1, n, 2).setNumberFormat('@');
+    s.getRange(5, 1, n, 3).setValues(md.dates.map(d => [
+      `${mNum}/${Number(d.slice(8))}`, wd_(d) + (holidays[d] ? `・${holidays[d]}` : ''), md.shifts[d] || '',
+    ]));
+    const all = s.getRange(4, 1, n + 1, 3);
+    all.setBorder(true, true, true, true, true, true).setFontSize(12).setVerticalAlignment('middle');
+    s.getRange(5, 1, n, 2).setHorizontalAlignment('center');
+    s.getRange(5, 3, n, 1).setFontWeight('bold').setHorizontalAlignment('center');
+    s.getRange(5, 1, n, 2).setFontColors(md.dates.map(d => {
+      const w = wd_(d);
+      const c = holidays[d] || w === '日' ? '#c62828' : w === '土' ? '#1e5bb8' : '#1d2330';
+      return [c, c];
+    }));
+    s.getRange(5, 1, n, 3).setBackgrounds(md.dates.map(d => {
+      const w = wd_(d);
+      const bg = holidays[d] || w === '日' ? '#fdecec' : w === '土' ? '#eaf1fc' : null;
+      return [bg, bg, bg];
+    }));
+    s.setRowHeights(5, n, 24);
+    [80, 130, 140].forEach((w, i) => s.setColumnWidth(i + 1, w));
+    SpreadsheetApp.flush();
+
+    const fileName = shiftPdfName_(ym);
+    const blob = pdfOf_(ss, s, fileName);
+    const file = savePdf_(ym, blob);
+    return {
+      fileName,
+      pdfBase64: Utilities.base64Encode(blob.getBytes()),
+      pdfUrl: file.getUrl(),
+      fixed,
+    };
+  });
 }
 
 function subFolder_(name) {

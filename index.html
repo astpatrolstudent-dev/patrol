@@ -459,6 +459,10 @@ async function vShift() {
     h += `<ul class="warns">${d.warnings.map(w => `<li class="${w.level}">${md(w.date)} ${esc(w.text)}</li>`).join('')}</ul>`;
   }
   h += `<div class="chips mt">${Object.keys(counts).map(n => `<span class="chip">${esc(n)} <b>${counts[n]}</b></span>`).join('')}</div>`;
+  if (d.dates.some(x => d.shifts[x])) {
+    h += `<div class="row mt"><button class="btn" data-act="shiftPdf">シフトをPDFで出力</button>
+      <span class="muted">日付と担当者だけの一覧${fixed ? '' : '（確定前は「下書き」と入ります）'}</span></div>`;
+  }
   if (triN) h += `<div class="muted mt">△の人が入っている日：${triN}日</div>`;
   h += '</div>';
 
@@ -846,6 +850,16 @@ const ACT = {
     if (put(await run(() => api('setDeadline', S.ym.vote, '')))) { toast('締切を自動（前月末）に戻しました'); render(); }
   },
 
+  async shiftPdf() {
+    const ym = S.ym.shift;
+    const hol = {};
+    (S.cache[ym] ? S.cache[ym].dates : []).forEach(x => { const n = holiday(x); if (n) hol[x] = n; });
+    const r = await run(() => api('exportShift', ym, hol));
+    if (!r) return;
+    if (r.demo) return toast('デモでは PDF は作られません');
+    download(r.pdfBase64, r.fileName, 'application/pdf');
+    toast(`「${r.fileName}」を出力しました（保存先フォルダにも保存）`);
+  },
   async export() {
     const ym = S.ym.report;
     const r = await run(() => api('exportReport', ym));
@@ -1170,6 +1184,7 @@ const Mock = !IS_DEMO ? null : (() => {
     addMember(name) { const m = db.members.find(x => x.name === name); if (m) m.active = true; else db.members.push({ name, active: true, slackId: '' }); return app(); },
     setMemberActive(name, active) { db.members.find(x => x.name === name).active = active; return app(); },
     exportReport() { return { demo: true }; },
+    exportShift() { return { demo: true }; },
     setManager(name) { db.manager = name; return app(); },
     getReportPreview(ym) {
       const ds = dates(ym), last = ds[ds.length - 1];
