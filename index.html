@@ -93,9 +93,12 @@ a{color:var(--accent)}
 .link:hover{border-color:var(--accent)}
 .link .ttl{font-weight:600;color:var(--accent)}
 .link .go{margin-left:auto;color:var(--sub);font-size:18px}
-.form{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center}
+.form{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 10px;align-items:center}
 .form label{font-size:13px;color:var(--sub);white-space:nowrap}
 .form input,.form textarea{width:100%}
+.card h3{font-size:14px;margin:14px 0 6px}
+.form input[type=time]{width:7.2em;min-width:0}
+.mtTime{display:flex;gap:6px;align-items:center;flex-wrap:nowrap}
 textarea{font:inherit;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);resize:vertical}
 .addrow{display:grid;grid-template-columns:1fr 80px;gap:8px}
 .addrow .full{grid-column:1/-1}
@@ -360,6 +363,16 @@ function renderMe() {
 }
 
 /* ---------- 各種URL ---------- */
+function meetingLine(t, tm) {
+  const mt = S.app.meeting;
+  if (!mt || !mt.list) return '';
+  const m = mt.list.find(x => x.date === t) || mt.list.find(x => x.date === tm);
+  if (!m) return '';
+  const when = m.date === t ? '今日' : '明日';
+  const time = m.start ? ` ${esc(m.start)}〜${esc(m.end || '')}` : '';
+  return `<div class="mt" style="padding:8px 10px;border-radius:8px;background:var(--bg)"><b>${when}は${esc(mt.title)}</b>${time}${mt.url ? ` <a href="${esc(mt.url)}" target="_blank" rel="noopener" style="white-space:nowrap">Zoom を開く ↗</a>` : ''}</div>`;
+}
+
 function linksCard() {
   if (!LINKS.length) return '';
   return `<div class="card"><h2>各種URL</h2><div class="links">` + LINKS.map(l => `
@@ -391,7 +404,7 @@ async function vToday() {
       ${memberSelect(`id="rep-${t}"`, who || S.me)}
       <button class="btn primary" data-act="report" data-date="${t}">完了報告</button></div>`;
   }
-  h += tomorrowLine + '</div>';
+  h += tomorrowLine + meetingLine(t, tm) + '</div>';
   h += linksCard();
   h += `<div class="card row between"><span>今日のデータ入力 <b>${S.mToday ? S.mToday.length : '…'}</b>件</span>
     <button class="btn small" data-act="tab" data-tab="input">入力する</button></div>`;
@@ -692,6 +705,41 @@ function latestBox(k) {
   return `<div class="latest mt"><div class="latest-h">【${esc(k.label)}】の最新の記録（シートの一番下）</div>${body}</div>`;
 }
 
+/* ---------- AST定例会（⚙） ---------- */
+function meetingCard() {
+  const mt = S.app.meeting;
+  if (!mt) return `<div class="card"><h2>AST定例会</h2><p class="muted">Code.gs を更新して新バージョンでデプロイすると使えます。</p></div>`;
+  const ed = S.mtEdit || {};
+  const editing = !!ed.id;
+  const row = m => `<div class="item">
+      <span class="date ${wdc(m.date)}">${md(m.date)}</span>
+      <span class="grow">${m.start ? esc(m.start) + '〜' + esc(m.end || '') : '<span class="muted">時刻未定</span>'}${m.note ? `<br><span class="muted">${esc(m.note)}</span>` : ''}</span>
+      <button class="btn small" data-act="mtEdit" data-id="${esc(m.id)}">変更</button>
+      <button class="btn small" data-act="mtDel" data-id="${esc(m.id)}">削除</button></div>`;
+  const last = mt.list.length ? mt.list[mt.list.length - 1] : null;
+  return `<div class="card"><h2>${esc(mt.title)}</h2>
+    <p class="muted">前日の20時ごろ、参加中の全員に LINE で「明日は${esc(mt.title)}です」と Zoom の情報を送ります。</p>
+    <h3 class="mt">これからの予定（${mt.list.length}件）</h3>
+    <div class="list">${mt.list.map(row).join('') || '<div class="item muted">予定はありません</div>'}</div>
+    <h3 class="mt">${editing ? '予定を変更' : '予定を追加'}</h3>
+    <div class="form">
+      <label>日付</label><input type="date" id="mtDate" value="${esc(ed.date || '')}" min="${esc(S.app.today)}">
+      <label>時刻</label><div class="mtTime"><input type="time" id="mtStart" value="${esc(ed.start != null ? ed.start : (last ? last.start : ''))}"><span>〜</span><input type="time" id="mtEnd" value="${esc(ed.end != null ? ed.end : (last ? last.end : ''))}"></div>
+      <label>メモ</label><input id="mtNote" value="${esc(ed.note || '')}" placeholder="この回だけの連絡（例：対面・14-620）">
+    </div>
+    <div class="row mt"><button class="btn primary" data-act="mtSave">${editing ? '変更を保存' : '追加'}</button>${editing ? '<button class="btn" data-act="mtCancel">やめる</button>' : ''}</div>
+    <details class="mt"${mt.url ? '' : ' open'}><summary>毎回の Zoom 情報・案内文</summary>
+      <div class="form mt">
+        <label>会の名前</label><input id="mtTitle" value="${esc(mt.title)}">
+        <label>Zoom のリンク</label><input id="mtUrl" value="${esc(mt.url)}" placeholder="https://…zoom.us/j/…" inputmode="url">
+        <label>ミーティングID</label><input id="mtZid" value="${esc(mt.zid)}">
+        <label>パスコード</label><input id="mtPass" value="${esc(mt.pass)}">
+        <label>毎回の案内</label><textarea id="mtInfo" rows="3" placeholder="例：議題があれば前日までにスプレッドシートへ">${esc(mt.note)}</textarea>
+      </div>
+      <div class="row mt"><button class="btn" data-act="mtInfoSave">Zoom 情報を保存</button><button class="btn" data-act="mtTest">自分にプレビュー送信</button></div>
+    </details></div>`;
+}
+
 /* ---------- メンバー ---------- */
 function vMember() {
   const ms = S.app.members;
@@ -729,6 +777,8 @@ function vMember() {
       `</div>`;
   }
 
+  h += meetingCard();
+
   h += `<div class="card"><h2>管理者（名目）</h2>
     <div class="row">${memberSelect('id="mgrSel"', S.app.manager, 'なし')}<span class="muted">活動実績で手当 ${S.app.allowance}時間が付きます</span></div></div>`;
 
@@ -743,6 +793,7 @@ function vMember() {
       <div class="item"><span class="muted" style="width:5.5em">シフト確定時</span><span class="grow">全員へ、それぞれの担当日</span></div>
       <div class="item"><span class="muted" style="width:5.5em">完了報告時</span><span class="grow">担当者・実施者・管理者へ「完了しました」</span></div>
       <div class="item"><span class="muted" style="width:5.5em">夜22時ごろ</span><span class="grow">未報告なら担当者へ</span></div>
+      <div class="item"><span class="muted" style="width:5.5em">定例会の前日</span><span class="grow">20時ごろ、全員へ「明日はAST定例会です」＋Zoom</span></div>
       <div class="item"><span class="muted" style="width:5.5em">25日・月末前日</span><span class="grow">17時ごろ、次月のシフト希望の告知・リマインド（まだ回答していない人だけ）</span></div>
     </div>
     <div class="row mt"><button class="btn" data-act="testNotify">自分にテスト送信</button><button class="btn" data-act="lineQuota">今月の送信数</button></div>
@@ -760,6 +811,32 @@ function vMember() {
 const ACT = {
   tab(b) { S.tab = b.dataset.tab; render(); if (S.tab === 'input') loadMasterInfo(); },   // 前回の内容を出しつつ裏で最新に
   pwshow() { S.showPw = !S.showPw; render(); },
+  mtEdit(b) { const m = S.app.meeting.list.find(x => x.id === b.dataset.id); if (m) { S.mtEdit = Object.assign({}, m); render(); } },
+  mtCancel() { S.mtEdit = null; render(); },
+  async mtSave() {
+    const date = $('#mtDate').value, start = $('#mtStart').value, end = $('#mtEnd').value, note = $('#mtNote').value;
+    if (!date) return toast('日付を選んでください');
+    const id = S.mtEdit && S.mtEdit.id || '';
+    S.mtEdit = { id, date, start, end, note };
+    const r = await run(() => api('saveMeeting', id, date, start, end, note));
+    if (r) { S.app = Object.assign(S.app, { meeting: r.meeting }); S.mtEdit = null; saveBoot(); toast(id ? '予定を変更しました' : `${md(date)} を追加しました`); render(); }
+  },
+  async mtDel(b) {
+    const m = S.app.meeting.list.find(x => x.id === b.dataset.id);
+    if (!m || !confirm(`${md(m.date)} の予定を削除しますか？`)) return;
+    const r = await run(() => api('deleteMeeting', m.id));
+    if (r) { S.app = Object.assign(S.app, { meeting: r.meeting }); saveBoot(); toast('削除しました'); render(); }
+  },
+  async mtInfoSave() {
+    const info = { title: $('#mtTitle').value, url: $('#mtUrl').value, zid: $('#mtZid').value, pass: $('#mtPass').value, note: $('#mtInfo').value };
+    const r = await run(() => api('saveMeetingInfo', info));
+    if (r) { S.app = Object.assign(S.app, { meeting: r.meeting }); saveBoot(); toast('Zoom 情報を保存しました'); render(); }
+  },
+  async mtTest() {
+    if (!S.me) return toast('右上の「あなた」で自分の名前を選んでください');
+    const r = await run(() => api('testMeeting', S.me));
+    if (r) toast(r);
+  },
   copy(b) {
     const v = (S.app.needs || {})[b.dataset.k] || '';
     const done = () => toast((b.dataset.k === 'pw' ? 'PW' : 'ID') + ' をコピーしました');
@@ -1057,36 +1134,128 @@ async function init() {
  * ========================================================= */
 function buildShift(n, names, avail, prevLast, iterations) {
   const rank = v => (v === '〇' ? 0 : v === '△' ? 1 : 9);
+  // 散らばり具合の罰点：理想の間隔（日数÷回数）より詰まりすぎ・空きすぎ、月初・月末の空きすぎ
+  const spread = (a, c) => {
+    const pos = {};
+    a.forEach((x, i) => { if (x) (pos[x] = pos[x] || []).push(i); });
+    let pen = 0;
+    names.forEach(nm => {
+      const p = pos[nm];
+      if (!p || !p.length) return;
+      const ideal = n / p.length;
+      const lo = Math.max(2, ideal * 0.6), hi = ideal * 1.2;
+      for (let k = 1; k < p.length; k++) {
+        const g = p[k] - p[k - 1];
+        if (g < lo) pen += (lo - g) * (lo - g) * 3;
+        else if (g > hi) pen += (g - hi) * (g - hi) * 2;
+      }
+      const head = p[0] + 1, tail = n - p[p.length - 1];
+      if (head > ideal * 1.1) pen += (head - ideal * 1.1) * (head - ideal * 1.1) * 2;
+      if (tail > ideal * 1.1) pen += (tail - ideal * 1.1) * (tail - ideal * 1.1) * 2;
+    });
+    return pen;
+  };
+  const adjOk = (a, i) => {
+    const x = a[i];
+    if (!x) return true;
+    const left = i === 0 ? (prevLast || '') : a[i - 1];
+    const right = i === n - 1 ? '' : a[i + 1];
+    return x !== left && x !== right;
+  };
+  const scoreOf = (a, c) => {
+    const blanks = a.filter(x => !x).length;
+    const tri = a.filter((x, i) => x && avail[x][i] === '△').length;
+    const sq = names.reduce((s, nm) => s + c[nm] * c[nm], 0);
+    return blanks * 1e8 + tri * 1e5 + sq * 100 + spread(a, c);
+  };
   let best = null;
+
   for (let it = 0; it < iterations; it++) {
-    const a = new Array(n).fill(''); const c = {}; names.forEach(nm => { c[nm] = 0; });
+    const a = new Array(n).fill('');
+    const c = {};
+    names.forEach(nm => { c[nm] = 0; });
     const canPut = (nm, i) => {
       if (rank(avail[nm][i]) === 9) return false;
-      const l = i === 0 ? (prevLast || '') : a[i - 1]; const r = i === n - 1 ? '' : a[i + 1];
-      return nm !== l && nm !== r;
+      const left = i === 0 ? (prevLast || '') : a[i - 1];
+      const right = i === n - 1 ? '' : a[i + 1];
+      return nm !== left && nm !== right;
     };
-    const order = [...Array(n).keys()].map(i => ({ i, o: names.filter(nm => avail[nm][i] === '〇').length, t: names.filter(nm => avail[nm][i] === '△').length, r: Math.random() }))
-      .sort((x, y) => x.o - y.o || x.t - y.t || x.r - y.r).map(x => x.i);
+    // その人の、いちばん近い担当日までの距離（遠いほど優先）
+    const nearest = (nm, i) => {
+      let d = 99;
+      for (let k = 0; k < n; k++) if (a[k] === nm) d = Math.min(d, Math.abs(k - i));
+      if (i === 0 && prevLast === nm) d = Math.min(d, 1);
+      return d;
+    };
+
+    // 候補が少ない日から埋める
+    const order = Array.from({ length: n }, (_, k) => k).map(i => ({
+      i,
+      o: names.filter(nm => avail[nm][i] === '〇').length,
+      t: names.filter(nm => avail[nm][i] === '△').length,
+      r: Math.random(),
+    })).sort((x, y) => x.o - y.o || x.t - y.t || x.r - y.r).map(x => x.i);
+
     order.forEach(i => {
-      const ok = names.filter(nm => canPut(nm, i)); if (!ok.length) return;
-      const br = Math.min(...ok.map(nm => rank(avail[nm][i]))); const pool = ok.filter(nm => rank(avail[nm][i]) === br);
-      const mn = Math.min(...pool.map(nm => c[nm])); const top = pool.filter(nm => c[nm] === mn);
-      const p = top[Math.floor(Math.random() * top.length)]; a[i] = p; c[p]++;
+      const ok = names.filter(nm => canPut(nm, i));
+      if (!ok.length) return;
+      const bestRank = Math.min.apply(null, ok.map(nm => rank(avail[nm][i])));
+      const pool = ok.filter(nm => rank(avail[nm][i]) === bestRank);
+      const mn = Math.min.apply(null, pool.map(nm => c[nm]));
+      const top = pool.filter(nm => c[nm] === mn);
+      const far = Math.max.apply(null, top.map(nm => nearest(nm, i)));
+      const top2 = top.filter(nm => nearest(nm, i) === far);
+      const pick = top2[Math.floor(Math.random() * top2.length)];
+      a[i] = pick;
+      c[pick]++;
     });
-    let changed = true, guard = 0;
+
+    // 局所改善：空きを埋める / △→〇 / 多い人→少ない人
+    let changed = true;
+    let guard = 0;
     while (changed && guard++ < 1000) {
       changed = false;
       for (let i = 0; i < n; i++) {
-        const cur = a[i]; const rc = cur ? rank(avail[cur][i]) : 99;
-        for (const nm of names) {
+        const cur = a[i];
+        const rc = cur ? rank(avail[cur][i]) : 99;
+        for (let k = 0; k < names.length; k++) {
+          const nm = names[k];
           if (nm === cur || !canPut(nm, i)) continue;
           const rn = rank(avail[nm][i]);
-          if (rn < rc || (rn === rc && c[nm] + 1 < c[cur])) { a[i] = nm; c[nm]++; if (cur) c[cur]--; changed = true; break; }
+          if (rn < rc || (rn === rc && c[nm] + 1 < c[cur])) {
+            a[i] = nm;
+            c[nm]++;
+            if (cur) c[cur]--;
+            changed = true;
+            break;
+          }
         }
       }
     }
-    const score = a.filter(x => !x).length * 1e6 + a.filter((x, i) => x && avail[x][i] === '△').length * 1e3 + names.reduce((s, nm) => s + c[nm] * c[nm], 0);
-    if (!best || score < best.score) best = { assign: a.slice(), score };
+
+    // 散らばりの改善：2日の担当者を入れ替えて、〇△が悪くならず、間隔が整うなら採用
+    let cur = spread(a, c);
+    for (let pass = 0; pass < 8; pass++) {
+      let improved = false;
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const x = a[i], y = a[j];
+          if (!x || !y || x === y) continue;
+          if (rank(avail[y][i]) > rank(avail[x][i]) || rank(avail[x][j]) > rank(avail[y][j])) continue;
+          a[i] = y; a[j] = x;
+          if (adjOk(a, i) && adjOk(a, j) && (i === 0 || adjOk(a, i - 1)) && adjOk(a, Math.min(n - 1, i + 1)) &&
+              adjOk(a, j - 1) && adjOk(a, Math.min(n - 1, j + 1))) {
+            const s2 = spread(a, c);
+            if (s2 < cur - 1e-9) { cur = s2; improved = true; continue; }
+          }
+          a[i] = x; a[j] = y;
+        }
+      }
+      if (!improved) break;
+    }
+
+    const score = scoreOf(a, c);
+    if (!best || score < best.score) best = { assign: a.slice(), counts: Object.assign({}, c), score };
   }
   return best;
 }
@@ -1158,7 +1327,10 @@ const Mock = !IS_DEMO ? null : (() => {
   dates(thisM).forEach((d, i) => { if (d < today && i % 9 !== 4) db.reports[d] = { name: db.shifts[d] || '佐藤', at: d + ' 21:30' }; });
   active().slice(0, 6).forEach(n => { db.votes[nextM + '|' + n] = randVote(days(nextM)); });
 
-  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: true, lineUsers: ['今井', '蔵本', '中井'], lineAdmin: db.manager }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', needs: { id: 'demo@example.com', pw: 'demo-password' }, masterKinds: MASTER_DEMO });
+  const app = () => ({ today, thisMonth: thisM, nextMonth: nextM, members: db.members.map(m => Object.assign({}, m)), notify: { slack: false, line: true, lineUsers: ['今井', '蔵本', '中井'], lineAdmin: db.manager }, workHours: 0.25, manager: db.manager, allowance: 3, version: 'デモ', needs: { id: 'demo@example.com', pw: 'demo-password' }, masterKinds: MASTER_DEMO,
+    meeting: Object.assign({ title: 'AST定例会', url: 'https://us02web.zoom.us/j/0000000000', zid: '000 0000 0000', pass: 'demo', note: '' }, db.meetingInfo || {}, {
+      list: (db.meetings || [{ id: 'm1', date: (() => { const d = new Date(today + 'T00:00:00'); d.setDate(d.getDate() + 1); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; })(), start: '19:00', end: '20:30', note: '' }])
+        .filter(x => x.date >= today).sort((a, b) => (a.date + a.start < b.date + b.start ? -1 : 1)) }) });
   return {
     getAppData: app,
     getBootstrap() { const a = app(); a.months = {}; [-1, 0, 1].forEach(k => { const ym = addM(thisM, k); a.months[ym] = data(ym); }); return a; },
@@ -1185,6 +1357,15 @@ const Mock = !IS_DEMO ? null : (() => {
     setMemberActive(name, active) { db.members.find(x => x.name === name).active = active; return app(); },
     exportReport() { return { demo: true }; },
     exportShift() { return { demo: true }; },
+    saveMeeting(id, date, start, end, note) {
+      db.meetings = db.meetings || [];
+      if (id) Object.assign(db.meetings.find(x => x.id === id), { date, start, end, note });
+      else db.meetings.push({ id: 'm' + Date.now(), date, start, end, note });
+      return app();
+    },
+    deleteMeeting(id) { db.meetings = (db.meetings || []).filter(x => x.id !== id); return app(); },
+    saveMeetingInfo(info) { db.meetingInfo = Object.assign({}, info); return app(); },
+    testMeeting() { throw new Error('デモでは LINE は送られません'); },
     setManager(name) { db.manager = name; return app(); },
     getReportPreview(ym) {
       const ds = dates(ym), last = ds[ds.length - 1];
